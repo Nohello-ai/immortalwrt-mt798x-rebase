@@ -99,3 +99,58 @@ src-git video     https://github.com/openwrt/video.git;openwrt-25.12
   [`chasey-dev/immortalwrt-mt798x-rebase`](https://github.com/chasey-dev/immortalwrt-mt798x-rebase)。
 
 请不要把我们加的设备支持当成上游的行为。
+
+---
+
+## 六、怎么在这个仓库上干活
+
+本仓库是 [`chasey-dev/immortalwrt-mt798x-rebase`](https://github.com/chasey-dev/immortalwrt-mt798x-rebase) 的 fork。
+两个分支分工明确:
+
+| 分支 | 用途 | 规则 |
+|---|---|---|
+| `25.12` | 纯上游镜像 | **只同步,不往上提交任何东西** |
+| `openfi-6c` | 我们的设备支持 | 日常开发都在这里;推上去会自动触发构建 |
+
+**为什么这样分**:底座和"我们加的东西"混在一起的话,以后想同步上游
+就只能整棵树重抄一遍,也看不出自己改了什么。分开之后,同步是一次
+`git pull`,我们的改动永远是一个干净的 diff。
+
+### 同步上游
+
+```sh
+git fetch origin 25.12
+git checkout 25.12
+git merge --ff-only origin/25.12     # 纯上游,直接快进,不会有冲突
+git checkout openfi-6c
+git rebase 25.12                     # 我们的提交重放到新底座上
+git push --force-with-lease fork openfi-6c
+```
+
+`openfi-6c` 上的提交顺序是:先设备支持,再包和脚本,最后 CI 与说明 ——
+所以 rebase 时冲突通常只落在设备树和 `filogic.mk` 上,范围可控。
+
+### 提交给上游
+
+**不要拿 `openfi-6c` 直接开 PR** —— 那上面有我们固件特有的东西
+(自研的三个包、CI、说明文档),上游不需要。正确做法是从 `25.12`
+拉一个只含目标修复的分支:
+
+```sh
+git checkout -b fix-xxx origin/25.12
+# …只做那一处修复…
+git push fork fix-xxx
+# 然后在 GitHub 上向 chasey-dev:25.12 开 PR
+```
+
+已经这样提过一个:PR #111(设备树与板级配置修正)。
+
+### 构建
+
+推 `openfi-6c` 会自动跑 `.github/workflows/build.yml`,产物在
+仓库的 Releases 里(固件 + 它的 MD5)。
+
+CI 有五层缓存(dl / 工具链 / 宿主机工具 / 内核目录 / ccache),
+所以**第一次**约 60~90 分钟,之后 15~25 分钟。
+换分支名的话记得把 workflow 里 `push.branches` 一起改掉 ——
+名字不改就不会自动触发。
