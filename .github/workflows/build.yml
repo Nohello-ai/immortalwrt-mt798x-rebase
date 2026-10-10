@@ -36,8 +36,8 @@ on:
         type: boolean
         default: true
   push:
-    # ⚠️ 这里是分支名，按你实际用的分支改
-    branches: [main]
+    # 我们的开发分支(这个仓库是 fork,不是 main)
+    branches: [openfi-6c]
     paths:
       - 'defconfig/**'
       - 'feeds.conf.default'
