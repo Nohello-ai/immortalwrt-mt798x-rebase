@@ -1,3 +1,11 @@
+# OpenFi 6C — ImmortalWrt MT798x (25.12)
+
+> **这是 [`chasey-dev/immortalwrt-mt798x-rebase`](https://github.com/chasey-dev/immortalwrt-mt798x-rebase)
+> (分支 `25.12`)的再分发,只加了 OpenFi 6C 这一款设备的支持。**
+> 底座代码一行未改;从哪来、改了哪些、许可怎么算,见 **[ATTRIBUTION.md](ATTRIBUTION.md)**。
+
+---
+
 # ImmortalWrt - MT798x
 
 ```
