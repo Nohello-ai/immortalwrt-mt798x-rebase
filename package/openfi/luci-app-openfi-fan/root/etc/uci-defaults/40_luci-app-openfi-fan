@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# 首次启动写入默认风扇配置。
+# 只在配置缺失时写 —— 升级固件不会覆盖用户调过的曲线。
+#
+[ -f /etc/config/openfi ] && uci -q get openfi.fan >/dev/null && exit 0
+
+# ★ 必须先让配置文件存在。
+#   新版 uci(25.12 / 内核 6.18 那一代)的 `set` 【不会】自动创建配置文件:
+#   对不存在的配置名执行 uci set 会直接报 "Entry not found" 并返回 1 ——
+#   实测在 OpenWrt SNAPSHOT r36806 上就是这个行为。
+#   旧的 24.10 会自动建,所以这条在老固件上看着没事,换到新固件就整段失效。
+: >> /etc/config/openfi
+
+uci -q batch <<-EOC
+	set openfi.fan=fan
+	set openfi.fan.mode='auto'
+	set openfi.fan.period='5'
+	set openfi.fan.min_speed='10'
+	set openfi.fan.temp1='55'
+	set openfi.fan.temp2='58'
+	set openfi.fan.temp3='61'
+	set openfi.fan.temp4='65'
+	set openfi.fan.speed1='30'
+	set openfi.fan.speed2='50'
+	set openfi.fan.speed3='80'
+	set openfi.fan.speed4='100'
+	set openfi.fan.emergency_temp='85'
+	set openfi.fan.silent_max_temp='75'
+	set openfi.fan.silent_when_hi='1'
+	set openfi.fan.wifi_iface='ra0'
+	set openfi.fan.wifi_temp='1'
+	commit openfi
+EOC
+
+exit 0

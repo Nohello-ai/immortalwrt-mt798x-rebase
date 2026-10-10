@@ -1,0 +1,35 @@
+#!/bin/sh
+# shellcheck disable=SC1091,SC1090  # /etc/diag.sh 是目标系统上的文件,本机没有
+#
+# OpenFi 6C 物理滑动开关(pio 0)的按键处理。
+#
+# 为什么文件名叫 config:
+#   gpio-button-hotplug 用 linux,code 查它内置的映射表:
+#   KEY_CONFIG(0xab) → "config",于是 procd 执行 /etc/rc.button/config。
+#   设备树里的 label(叫 func)只影响 debugfs 里显示的名字,不参与取名。
+#
+# ★ 这个脚本【只做转发】,不自己判断状态:
+#   开关在哪一档、要不要静默,全部由 openfi-fan 自己每轮读 debugfs 决定
+#   (见 openfi_switch.c)。脚本的作用只是"事件一到就立刻叫醒它",
+#   不用等下一个采样周期 —— 拨开关是要马上有反应的。
+#
+#   这样做的好处:重启后如果没人拨过开关,守护进程照样知道当前档位;
+#   而以前靠 /var/run 标志文件的做法在这种情况下会判错。
+
+case "$ACTION" in
+pressed|released)
+	# 立刻重判(守护进程收到 HUP 会马上读一次开关和温度)
+	for p in $(pgrep -f '/usr/sbin/openfi-fan$' 2>/dev/null); do
+		kill -HUP "$p" 2>/dev/null
+	done
+	# 灯也跟着变(装了 openfi-led 才执行)
+	[ -x /usr/sbin/openfi-led ] && /usr/sbin/openfi-led apply >/dev/null 2>&1
+	;;
+timeout)
+	# 开关长时间停在某一档:按 OpenWrt 惯例进 failsafe(和旧固件一致)
+	. /etc/diag.sh 2>/dev/null
+	set_state failsafe 2>/dev/null
+	;;
+esac
+
+return 0

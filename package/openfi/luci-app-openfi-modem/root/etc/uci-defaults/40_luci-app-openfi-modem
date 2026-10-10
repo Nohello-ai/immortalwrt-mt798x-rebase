@@ -1,0 +1,21 @@
+#!/bin/sh
+#
+# 首次启动写入默认模组配置。
+#
+# ★ 先建文件:新版 uci 的 set 不会自动创建配置文件(真机上测出来的)。
+#
+[ -f /etc/config/openfi_modem ] && uci -q get openfi_modem.modem >/dev/null && exit 0
+
+: >> /etc/config/openfi_modem
+
+uci -q batch <<-EOC
+	set openfi_modem.modem=modem
+	set openfi_modem.modem.at_port='auto'
+	set openfi_modem.modem.baud='115200'
+	set openfi_modem.modem.timeout_ms='1200'
+	set openfi_modem.modem.period='15'
+	set openfi_modem.modem.reset_gpio='1'
+	commit openfi_modem
+EOC
+
+exit 0

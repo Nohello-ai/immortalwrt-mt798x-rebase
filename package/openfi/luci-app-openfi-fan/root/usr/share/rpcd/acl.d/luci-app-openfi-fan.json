@@ -1,0 +1,66 @@
+{
+	"luci-app-openfi-fan": {
+		"description": "OpenFi 6C 风扇控制:读状态、手动调速、保存后热重载",
+		"read": {
+			"ubus": {
+				"file": [
+					"exec",
+					"read"
+				]
+			},
+			"file": {
+				"/usr/sbin/openfi-fan --status": [
+					"exec"
+				],
+				"/usr/sbin/openfi-fan": [
+					"exec"
+				],
+				"/usr/sbin/openfi-fan --speed *": [
+					"exec"
+				],
+				"/etc/init.d/openfi-fan reload": [
+					"exec"
+				],
+				"/etc/init.d/openfi-fan": [
+					"exec"
+				],
+				"/var/run/openfi-fan.json": [
+					"read"
+				]
+			},
+			"uci": [
+				"openfi"
+			]
+		},
+		"write": {
+			"ubus": {
+				"file": [
+					"exec"
+				]
+			},
+			"file": {
+				"/usr/sbin/openfi-fan --status": [
+					"exec"
+				],
+				"/usr/sbin/openfi-fan": [
+					"exec"
+				],
+				"/usr/sbin/openfi-fan --speed *": [
+					"exec"
+				],
+				"/etc/init.d/openfi-fan reload": [
+					"exec"
+				],
+				"/etc/init.d/openfi-fan": [
+					"exec"
+				],
+				"/var/run/openfi-fan.json": [
+					"read"
+				]
+			},
+			"uci": [
+				"openfi"
+			]
+		}
+	}
+}

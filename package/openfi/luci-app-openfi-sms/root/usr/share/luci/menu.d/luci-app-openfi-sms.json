@@ -1,0 +1,15 @@
+{
+	"admin/modem/sms": {
+		"title": "短信",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "openfi/sms"
+		},
+		"depends": {
+			"acl": [
+				"luci-app-openfi-sms"
+			]
+		}
+	}
+}

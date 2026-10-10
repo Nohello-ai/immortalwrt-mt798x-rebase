@@ -1,0 +1,14 @@
+{
+	"admin/modem": {
+		"title": "移动网络",
+		"order": 45,
+		"action": { "type": "firstchild" },
+		"depends": { "acl": [ "luci-app-openfi-modem" ] }
+	},
+	"admin/modem/status": {
+		"title": "5G 模组",
+		"order": 10,
+		"action": { "type": "view", "path": "openfi/modem" },
+		"depends": { "acl": [ "luci-app-openfi-modem" ] }
+	}
+}
