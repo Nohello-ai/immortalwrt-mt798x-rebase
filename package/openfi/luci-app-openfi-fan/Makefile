@@ -16,7 +16,7 @@ define Package/luci-app-openfi-fan
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
   TITLE:=OpenFi 6C 风扇温控
-  URL:=https://github.com/Nohello-ai/immortalwrt-mt798x-25.12
+  URL:=https://github.com/natsukaze/immortalwrt-mt798x-rebase
   DEPENDS:=+openfi-lib +luci-base
 endef
 

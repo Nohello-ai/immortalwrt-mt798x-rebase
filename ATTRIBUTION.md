@@ -9,7 +9,7 @@
 
 | 角色 | 仓库 | 分支 / 提交 |
 |---|---|---|
-| **本仓库** | `Nohello-ai/immortalwrt-mt798x-25.12` | `main` |
+| **本仓库** | `natsukaze/immortalwrt-mt798x-rebase` | `main` |
 | **直接上游(我们复制的就是它)** | [`chasey-dev/immortalwrt-mt798x-rebase`](https://github.com/chasey-dev/immortalwrt-mt798x-rebase) | 分支 `25.12` |
 | **上游的基准提交** | 同上 | `a99b0888b88f`<br>*mtk: eqos: preserve the HNAT exception bit*<br>2026-10-10 |
 

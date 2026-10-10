@@ -19,7 +19,7 @@ define Package/openfi-lib
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=OpenFi 6C 后端公共库(静态)
-  URL:=https://github.com/Nohello-ai/immortalwrt-mt798x-25.12
+  URL:=https://github.com/natsukaze/immortalwrt-mt798x-rebase
   DEPENDS:=
 endef
 
