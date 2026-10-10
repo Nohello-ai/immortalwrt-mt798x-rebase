@@ -1,10 +1,45 @@
 // SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * OpenFi 6C —— MT7981B + 256MB RAM + 1GB SPI-NAND + M.2 (5G 模组)
+ *
+ * 这份 dts 的事实来源是【原厂固件的 DTB】(反编译后逐项核对过):
+ *   · 按键 reset = pio1 ACTIVE_LOW / KEY_RESTART
+ *   · 按键 func  = pio0 ACTIVE_HIGH / KEY_CONFIG(0xab)
+ *   · LED system(pio2) / internet(pio34) / wifi(pio35) / modem(pio11),全 ACTIVE_LOW
+ *   · gpio-export:hub_reset(8) / lte_power(9) / lte_reset(10) / lte_reset_2(12,ACTIVE_HIGH)
+ *   · Factory 分区 0x180000 +0x200000,MAC 在偏移 0x04
+ *   · SPI-NAND 除 mux 外还有 conf-pu / conf-pd
+ *
+ * 与上游同名文件的区别:
+ *   · 它把 gpio 8 当成 usb_vbus 稳压器,但原厂 gpio 8 是【HUB 复位】
+ *     → 这么写会把 HUB 复位信号抢走
+ *   · 它的按键写成 mode/EV_SW/ACTIVE_LOW,与硬件相反
+ *   · 它没有 SPI-NAND 的 conf-pu / conf-pd,也没有 xhci 的 USB3 配置
+ *   · 它没写 gmac0,也没覆盖 fan 的 cooling-levels
+ *
+ * WiFi 节点说明(容易搞错):
+ *   本 base(6.12 + MTK feeds)把 vendor 原来的两个节点【合并成一个】了:
+ *       wifi: wifi@18000000 {
+ *           compatible = "mediatek,wbsys", "mediatek,mt7981-wmac";
+ *           chip_id = <0x7981>;
+ *       };
+ *   见 patches-6.12/999-zzz-5005-dts-mtk-mt7981b-add-mtwifi-support.patch
+ *   → 【没有 &wbsys 这个标签】,闭源驱动认的就是 &wifi。
+ *     写 &wbsys 会 dtc 报未定义标签。
+ */
 
 /dts-v1/;
 
+/*
+ * 这些头在老 base 里是 mt7981.dtsi 自带的;新 base 的 mt7981b.dtsi 不一定带,
+ * 而本目录其他板子(asr3000 / airtel / re3000 …)都显式列出来。
+ * 重复 include 无害(头文件都有 #ifndef 保护),所以这里显式写全,避免宏找不到。
+ */
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/pinctrl/mt65xx.h>
 
 #include "mt7981b.dtsi"
 
@@ -13,10 +48,11 @@
 	compatible = "openfi,6c", "mediatek,mt7981b";
 
 	aliases {
-		led-boot = &led_sys_green;
-		led-failsafe = &led_sys_green;
-		led-running = &led_sys_green;
-		led-upgrade = &led_sys_green;
+		label-mac-device = &gmac1;
+		led-boot = &led_status;
+		led-failsafe = &led_status;
+		led-running = &led_status;
+		led-upgrade = &led_status;
 		serial0 = &uart0;
 	};
 
@@ -33,92 +69,148 @@
 			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
 		};
 
-		mode {
-			label = "mode";
-			linux,input-type = <EV_SW>;
-			linux,code = <BTN_0>;
-			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
+		/*
+		 * 物理模式开关。
+		 * 键值与极性【必须】对齐原厂 DTB:ACTIVE_HIGH + 0xab = KEY_CONFIG。
+		 * 写反了(比如 ACTIVE_LOW / EV_SW / BTN_0)会让读到的状态相反。
+		 */
+		func {
+			label = "func";
+			linux,code = <KEY_CONFIG>;
+			gpios = <&pio 0 GPIO_ACTIVE_HIGH>;
 			debounce-interval = <60>;
 		};
 	};
 
-	gpio-leds {
+	leds {
 		compatible = "gpio-leds";
 
-		led_sys_green: led-0 {
+		/*
+		 * 按 Linux 官方命名法定名:function + color。
+		 * sysfs 里的名字就是 <color>:<function>,即:
+		 *     green:status / green:wan / green:wlan / green:mobile
+		 *
+		 * 不要用 label 定名 —— 那样名字由 label 直接决定(system/internet/…),
+		 * 和内核/其他板的风格不一致。用户态脚本统一按 green:<function> 找。
+		 *
+		 * default-state 对齐原厂 DTB(前三盏常亮、modem 灭)。
+		 * 不加 linux,default-trigger —— 四盏灯都归用户态 openfi-led 管。
+		 */
+		led_status: led-0 {
 			function = LED_FUNCTION_STATUS;
 			color = <LED_COLOR_ID_GREEN>;
 			gpios = <&pio 2 GPIO_ACTIVE_LOW>;
+			default-state = "on";
 		};
 
-		led-1 {
-			function = LED_FUNCTION_LAN;
+		led_wan: led-1 {
+			function = LED_FUNCTION_WAN;
 			color = <LED_COLOR_ID_GREEN>;
 			gpios = <&pio 34 GPIO_ACTIVE_LOW>;
+			default-state = "on";
 		};
 
-		led-2 {
-			function = LED_FUNCTION_WLAN_5GHZ;
+		led_wlan: led-2 {
+			function = LED_FUNCTION_WLAN;
 			color = <LED_COLOR_ID_GREEN>;
 			gpios = <&pio 35 GPIO_ACTIVE_LOW>;
-			linux,default-trigger = "phy1tpt";
+			default-state = "on";
 		};
 
-		led-3 {
+		led_mobile: led-3 {
 			function = LED_FUNCTION_MOBILE;
 			color = <LED_COLOR_ID_GREEN>;
 			gpios = <&pio 11 GPIO_ACTIVE_LOW>;
+			default-state = "off";
 		};
 	};
 
 	gpio-export {
 		compatible = "gpio-export";
 
-		modem_power {
-			gpio-export,name = "modem_power";
+		/*
+		 * gpio 8 是 USB HUB 的复位脚,不是 USB VBUS 控制。
+		 * 上游那份 dts 把它写成了 regulator-usb-vbus 并挂到 xhci 的
+		 * vbus-supply 上,等于把 HUB 复位抢走了 —— 不要那么写。
+		 */
+		hub_reset {
+			gpio-export,name = "hub_reset";
+			gpio-export,output = <0>;
+			gpios = <&pio 8 GPIO_ACTIVE_LOW>;
+		};
+
+		lte_power {
+			gpio-export,name = "lte_power";
 			gpio-export,output = <1>;
 			gpios = <&pio 9 GPIO_ACTIVE_LOW>;
 		};
 
-		modem_reset {
-			gpio-export,name = "modem_reset";
+		lte_reset {
+			gpio-export,name = "lte_reset";
 			gpio-export,output = <1>;
 			gpios = <&pio 10 GPIO_ACTIVE_LOW>;
 		};
 
-		modem_reset_2 {
-			gpio-export,name = "modem_reset_2";
+		lte_reset_2 {
+			gpio-export,name = "lte_reset_2";
 			gpio-export,output = <0>;
 			gpios = <&pio 12 GPIO_ACTIVE_HIGH>;
 		};
 	};
 
-	usb_vbus: regulator-usb-vbus {
-		compatible = "regulator-fixed";
-		regulator-name = "usb_vbus";
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-		gpios = <&pio 8 GPIO_ACTIVE_LOW>;
-		regulator-boot-on;
-	};
 };
 
-&fan {
-	pwms = <&pwm 0 40000 0>;
+/*
+ * 风扇:这里【故意不写 &fan】。
+ *
+ * dtsi 里那个 pwm-fan 节点本来就带 cooling-levels、而且默认就是 disabled,
+ * 而本板的风扇由用户态独占 —— openfi-fan 直接写
+ *     /sys/class/pwm/pwmchip0/pwm0(+pwm1) 的 period / duty_cycle,
+ * 完全不用内核那套 thermal cooling level(那张表写了也是死代码)。
+ *
+ * 所以:保持 dtsi 的默认(disabled)即可,不要动它。
+ * 一旦 pwm-fan 驱动 probe,它会占住 pwm 通道,用户态再 export 就会 EBUSY。
+ * 相关说明见文件末尾的 &pwm。
+ */
+
+&uart0 {
+	status = "okay";
+};
+
+&watchdog {
 	status = "okay";
 };
 
 &eth {
 	pinctrl-names = "default";
 	pinctrl-0 = <&mdio_pins>;
+
 	status = "okay";
 
+	/*
+	 * gmac0 连着一条 2500base-x 的固定链路(SERDES 直连,没有 PHY 芯片)。
+	 * 实测这个口开机以来 rx 一直是 0 —— 另一端没有任何东西在通信,
+	 * 但节点要留着:它是对硬件拓扑的如实描述。
+	 */
+	gmac0: mac@0 {
+		compatible = "mediatek,eth-mac";
+		reg = <0>;
+		phy-mode = "2500base-x";
+
+		fixed-link {
+			speed = <2500>;
+			full-duplex;
+			pause;
+		};
+	};
+
+	/* gmac1 才是那个唯一的实体网口(br-lan 成员) */
 	gmac1: mac@1 {
 		compatible = "mediatek,eth-mac";
 		reg = <1>;
 		phy-mode = "gmii";
 		phy-handle = <&int_gbe_phy>;
-		nvmem-cells = <&macaddr_factory_4 0>;
+		nvmem-cells = <&macaddr 0>;
 		nvmem-cell-names = "mac-address";
 	};
 };
@@ -129,6 +221,8 @@
 	status = "okay";
 
 	spi_nand: flash@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
 		compatible = "spi-nand";
 		reg = <0>;
 		spi-max-frequency = <52000000>;
@@ -165,18 +259,22 @@
 			factory: partition@180000 {
 				label = "Factory";
 				reg = <0x180000 0x0200000>;
-				read-only;
 
+				/*
+				 * macaddr 必须包在 nvmem-layout/fixed-layout 里,并声明
+				 * mac-base + #nvmem-cell-cells,否则 gmac1 的
+				 *   nvmem-cells = <&macaddr 0>;
+				 * 取不到值,eth1 会退化成随机 MAC。
+				 * 偏移 0x4 与原厂 board.d 的
+				 *   mtd_get_mac_binary Factory 0x04
+				 * 一致,保持不变。
+				 */
 				nvmem-layout {
 					compatible = "fixed-layout";
 					#address-cells = <1>;
 					#size-cells = <1>;
 
-					eeprom_factory_0: eeprom@0 {
-						reg = <0x0 0x1000>;
-					};
-
-					macaddr_factory_4: macaddr@4 {
+					macaddr: macaddr@0 {
 						compatible = "mac-base";
 						reg = <0x4 0x6>;
 						#nvmem-cell-cells = <1>;
@@ -211,10 +309,28 @@
 };
 
 &pio {
+	/*
+	 * SPI-NAND 是启动介质。除 mux 之外必须补 conf-pu / conf-pd:
+	 * CS/HOLD/WP 上拉、CLK/MOSI/MISO 下拉 + 8mA 驱动强度。
+	 * 这与原厂 DTB 一致(原厂写作 drive-strength=<8>、bias=<0x67>),
+	 * 本树内其余 12+ 块 MT7981 板也都有这两组。
+	 */
 	spi0_flash_pins: spi0-pins {
 		mux {
 			function = "spi";
 			groups = "spi0", "spi0_wp_hold";
+		};
+
+		conf-pu {
+			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
+			drive-strength = <MTK_DRIVE_8mA>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
+		};
+
+		conf-pd {
+			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
+			drive-strength = <MTK_DRIVE_8mA>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
 		};
 	};
 
@@ -231,38 +347,92 @@
 };
 
 &xhci {
+	/*
+	 * 原厂 DTB 里 u3p-dis-msk = <0>,即 USB3 全部使能;
+	 * 并且显式列出两个 PHY(u2port0 / u3port0)。
+	 * 上游那份 dts 缺这两处 —— USB3 会退回 USB2。
+	 */
+	mediatek,u3p-dis-msk = <0x0>;
+	phys = <&u2port0 PHY_TYPE_USB2>,
+	       <&u3port0 PHY_TYPE_USB3>;
 	status = "okay";
-	vbus-supply = <&usb_vbus>;
 };
 
-&uart0 {
-	status = "okay";
-};
-
-&watchdog {
-	status = "okay";
-};
-
+/*
+ * WiFi —— dtsi 里默认 status = "disabled",必须显式打开。
+ *
+ * 注意:6.12 + MTK feeds 把 vendor 原来的 wbsys / wifi 两个节点【合并成一个】了
+ * (compatible 里带上了 "mediatek,wbsys"),
+ * 所以【没有 &wbsys 这个标签】,闭源 mt_wifi 驱动认的就是这个 &wifi 节点。
+ *
+ * 这里只写 status,不加任何 eeprom 属性 —— 跟本目录的 cmcc-rax3000m 一样
+ * (那是本目录最简的写法),也和原厂 DTB 一致(原厂 wbsys 节点里没有 eeprom 属性)。
+ * 校准数据由驱动自己去找(MTK feeds 里有 universal-eeprom-read-write-backend)。
+ *
+ * ⚠️ 万一刷上去发现 WiFi 起不来或功率/信道异常,再按这两种写法之一补上:
+ *        nvmem-cells = <&eeprom_factory_0>;
+ *        nvmem-cell-names = "eeprom";
+ *    (airpi-ap3000m / abt-asr3000 / comfast 是这样写的,需要自己定义那个 cell)
+ *    或者
+ *        mediatek,mtd-eeprom = <&factory 0>;
+ *    (glinet-gl-mt3000 是这样写的,直接用整个 Factory 分区)
+ */
 &wifi {
-	#address-cells = <1>;
-	#size-cells = <0>;
-	nvmem-cells = <&eeprom_factory_0>;
-	nvmem-cell-names = "eeprom";
 	status = "okay";
-
-	band@0 {
-		reg = <0>;
-		nvmem-cells = <&macaddr_factory_4 2>;
-		nvmem-cell-names = "mac-address";
-	};
-
-	band@1 {
-		reg = <1>;
-		nvmem-cells = <&macaddr_factory_4 3>;
-		nvmem-cell-names = "mac-address";
-	};
 };
 
+/*
+ * HNAT 的口位分类。
+ *
+ * 【这里不是"规定谁是 WAN"】
+ *   逻辑上的 WAN/LAN 由 firewall + network 配置在 userspace 决定,是动态的;
+ *   而 HNAT 的分类是驱动 probe 时从 DTS 读的静态值,那时候 userspace 还没起来。
+ *   两者不在一个层面:
+ *     · 逻辑 WAN/LAN 配错 → 上不了网
+ *     · HNAT 分类不对     → 能上网,但【不加速】→ CPU 占用高、转发掉速
+ *
+ * 【分类只决定"走哪条快路径",不决定"能不能双向加速"】
+ *   一条流绑定之后,FOE 表项里同时存了原始四元组(sip/dip/sport/dport)
+ *   和转换后四元组(new_sip/new_dip/new_sport/new_dport),去程回程都走硬件。
+ *   所以"卸载"这件事本身就是双向的。
+ *
+ * 【本板两个口都可能承载 WAN 流量】
+ *   usb0 / wwan0 —— 5G 模组(常态)     → 靠 ext-devices-prefix 的 "usb" 归为 EXT
+ *   eth1         —— 实体网口(插宽带时) → 归为 LAN
+ *   两者都在 hnat_set_iif() 认的合法分类里
+ *   (LAN / LAN2 / PPD / EXT / WAN / VIRTUAL),
+ *   所以【不需要把谁"标成 WAN"】。
+ *   而且 do_ge2ext_fast 的判定是 (IS_LAN_GRP || IS_WAN || IS_PPD) ——
+ *   LAN 也算,所以物理口无论当 LAN 还是当 WAN 都能走硬件加速。
+ *
+ * 【取值注意:IS_WAN 是前缀匹配,不是相等】
+ *   #define IS_WAN(dev) (!strncmp((dev)->name, WAN_DEV_NAME, strlen(WAN_DEV_NAME)))
+ *   所以不要写 "/"  —— strlen=1,网卡名不可能以 '/' 开头,等于 IS_WAN 恒假;
+ *   也不要写 ""   —— strlen=0,strncmp 恒为 0,所有设备都算 WAN,会打乱判断。
+ *   写一个具体的名字即可。
+ *
+ * 【本板不写 &hnat 覆盖块】
+ *   dtsi 已经被 patches-6.12/999-zzz-5003-dts-mtk-mt7981b-hnat-enable-mtkhnat.patch
+ *   设成了:
+ *       status = "okay"
+ *       mtketh-wan = "eth1" / mtketh-lan = "lan"
+ *       mtketh-max-gmac = <2> / mtketh-ppe-num = <2>
+ *       ext-devices-prefix = "wwan", "usb", "eth"
+ *   这套值对本板是可用的:
+ *       usb0/wwan0(5G 模组)→ 命中 "usb" 前缀 → 归 EXT
+ *       eth1(实体网口)     → 命中 "eth" 前缀 → 归 EXT;
+ *                            同时 IS_WAN("eth1") 为真,
+ *                            所以 do_ge2ext_fast() 的 (LAN||WAN||PPD) 也成立
+ *   也就是说两个口无论谁在当 WAN,硬件加速都成立,不需要我们再覆盖。
+ *   —— 能少定义就少定义,所以这里【故意不写 &hnat】。
+ *
+ *   ⚠️ 唯一要记住的:千万别把它改成 "/" 或 ""(原因见上面前缀匹配那段)。
+ */
+
+/*
+ * PWM:只做两件事 —— 打开控制器、把引脚 mux 上(pwm0_0 + pwm1_0)。
+ * 两路是反向的,由用户态独占,所以 dtsi 里那个 pwm-fan 保持它自己的 disabled 不动。
+ */
 &pwm {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pwm_pins>;

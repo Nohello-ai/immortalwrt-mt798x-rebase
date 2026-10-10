@@ -244,7 +244,22 @@ openembed,som7981)
 	ucidef_set_led_netdev "lanlink" "LANLINK" "green:lan" "eth1" "link"
 	;;
 openfi,6c)
-	ucidef_set_led_netdev "lan" "LAN" "green:lan" "eth0" "link tx rx"
+	# 上游原来写的是 ucidef_set_led_netdev "lan" "LAN" "green:lan" "eth0" ...
+	# 那是从别的板子抄来的,两个引用在本板上都不存在:
+	#   · green:lan —— 本板 DTS 定义的是 green:status / green:wan /
+	#                  green:wlan / green:mobile(按官方 function+color 命名)
+	#   · eth0      —— 本板的实体网口是 eth1(gmac1);eth0 是 gmac0 那条
+	#                  2500base-x 固定链路,板子上没有对应接口,是死链路
+	# 照着抄的结果会是:灯配了个不存在的 sysfs 名,内核直接忽略,灯不亮。
+	#
+	# 本板实际情况(从设备上读回来的):
+	#   WAN      = usb0 (5G 模组, dhcp)
+	#   实体网口 = eth1 (br-lan 成员)
+	#   无线     = ra0 (2.4G) / rax0 (5G)  —— 闭源 mt_wifi 驱动的固定命名
+	ucidef_set_led_heartbeat "status" "Status" "green:status"
+	ucidef_set_led_netdev "wan" "WAN" "green:wan" "usb0" "link tx rx"
+	ucidef_set_led_default "wlan" "WLAN" "green:wlan" "1"
+	ucidef_set_led_default "mobile" "Mobile" "green:mobile" "0"
 	;;
 openwrt,one)
 	ucidef_set_led_netdev "wanact" "WANACT" "mdio-bus:0f:green:wan" "eth0" "rx tx"

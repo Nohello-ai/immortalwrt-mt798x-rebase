@@ -3053,7 +3053,21 @@ define Device/openfi_6c
   DEVICE_MODEL := 6C
   DEVICE_DTS := mt7981b-openfi-6c
   DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES :=  kmod-usb3 automount
+  # 必须和 dts 里 compatible 的第一项一致，否则 sysupgrade 会拒绝这个镜像
+  SUPPORTED_DEVICES += openfi,6c
+  # USB：
+  #   kmod-usb3          —— M.2 上的 5G 模组挂在 USB3 上，没有它模组只剩 USB2
+  #   cdc-ncm / rndis / cdc-ether —— 三种"模组 → CPU"的数据通道驱动
+  #                        （展锐平台的模组不支持 QMI，所以【不要】qmi-wwan）
+  #   serial-option / serial-wwan —— 提供模组的 AT 口（ttyUSB*）
+  # 存储：USB 盘自动挂载；F2FS 那几个是给 F2FS 格式的 U 盘/分区用的
+  #
+  # 不带厂商那套 luci-app-openfi，也不带 pwm-fan 驱动：
+  # dts 里 pwm-fan 保持 disabled，两路 PWM 留给用户态（openfi-fan 直接写 pwmchip）。
+  DEVICE_PACKAGES := kmod-usb3 kmod-usb-storage automount \
+                     kmod-usb-net-cdc-ncm kmod-usb-net-rndis kmod-usb-net-cdc-ether \
+                     kmod-usb-serial-option kmod-usb-serial-wwan \
+                     kmod-fs-f2fs mkf2fs f2fsck losetup
   KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
   KERNEL_INITRAMFS := kernel-bin | lzma | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
