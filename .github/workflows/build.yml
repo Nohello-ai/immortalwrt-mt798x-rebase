@@ -99,14 +99,19 @@ jobs:
           #   短信包用了 select()/fd_set 却没包含 <sys/select.h>,
           #   CI 编到第 17 步(67 分钟后)才报 unknown type name 'fd_set'。
           #   这里 5 秒就能拦住,不用白等一个多小时。
-          if command -v apt-get >/dev/null 2>&1; then
-            sudo apt-get install -y -qq musl-tools >/dev/null 2>&1 || true
+          # 【必须有超时】上一轮就是这里卡了 28 分钟没动:
+          #   apt-get install 在网络抖动时会一直重试,没有上限。
+          #   timeout 一包上就最多等 90 秒,拿不到就跳过,绝不阻塞构建。
+          if command -v apt-get >/dev/null 2>&1 && ! command -v musl-gcc >/dev/null 2>&1; then
+            timeout 90 sudo apt-get install -y -qq musl-tools >/dev/null 2>&1 \
+              || timeout 120 sh -c 'sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools' >/dev/null 2>&1 \
+              || echo "::warning::musl-tools 装不上,跳过目标环境编译检查"
           fi
           # 这个检查只告警、不阻塞构建 ——
           # 检查脚本本身也会写错(上次就是它路径写错挡住了构建,
           # 白白多跑一次)。它发现问题时在日志里喊出来就够了。
-          if ! sh scripts/openfi/check-musl.sh; then
-            echo "::warning::musl 编译检查没过 —— 目标机上很可能编不过,看上面的输出"
+          if ! timeout 240 sh scripts/openfi/check-musl.sh; then
+            echo "::warning::musl 编译检查没跑完(超时或有问题)—— 看上面的输出"
           fi
 
           # files/ 覆盖目录里的脚本:语法 + 纯逻辑回归。
@@ -182,19 +187,27 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
             /opt/google/chrome /usr/share/swift "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
-          sudo apt-get clean
+          timeout 60 sudo apt-get clean || true
           df -h /
 
       - name: 安装编译依赖
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
-            gettext git libncurses-dev libssl-dev libelf-dev zlib1g-dev \
-            python3 python3-dev python3-setuptools python3-pyelftools python3-ply \
-            rsync unzip file wget curl ca-certificates subversion swig cmake \
-            ninja-build autoconf automake libtool pkgconf ccache help2man patch \
-            time xsltproc zstd liblz4-tool libzstd-dev device-tree-compiler lua5.1
+          # 【必须有超时】apt 联网时网络一抖就会无限重试。
+          # 上一轮 step 5 的自检就是这么卡了 28 分钟;这一步包更多、更慢,
+          # 同样的坑。两次都包上 timeout,还不行就明确报错(编译本来也需要这些包)。
+          PKGS="build-essential clang flex bison g++ gawk gcc-multilib g++-multilib
+                gettext git libncurses-dev libssl-dev libelf-dev zlib1g-dev
+                python3 python3-dev python3-setuptools python3-pyelftools python3-ply
+                rsync unzip file wget curl ca-certificates subversion swig cmake
+                ninja-build autoconf automake libtool pkgconf ccache help2man patch
+                time xsltproc zstd liblz4-tool libzstd-dev device-tree-compiler lua5.1"
+          timeout 300 sudo apt-get update -qq || echo "::warning::apt update 超时"
+          timeout 600 sudo apt-get install -y -qq $PKGS \
+            || { echo "第一次装依赖超时/失败,重试一次"; timeout 900 sudo apt-get install -y -qq $PKGS; }
+          echo "----- 编译依赖自检 -----"
+          for t in gcc g++ make python3 unzip rsync dtc timeout; do
+            command -v "$t" >/dev/null 2>&1 && echo "  ✅ $t" || { echo "::error::缺少 $t"; exit 1; }
+          done
 
       # ---------------- 编译缓存（五层）----------------
       - name: ① 缓存 dl/（源码包）
@@ -259,8 +272,9 @@ jobs:
       - name: 更新并安装 feeds
         id: feeds
         run: |
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          # feeds 要从 5 个 git 仓库拉代码,同样不能没有上限
+          timeout 600 ./scripts/feeds update -a || { echo "::error::feeds 更新超时(git 仓库拉不下来)"; exit 1; }
+          timeout 600 ./scripts/feeds install -a || { echo "::error::feeds 安装超时"; exit 1; }
           # 我们自己的包在树里（package/openfi/），跟着固件仓库一起版本化，
           # 所以"包版本"就是当前这次提交 —— 发布说明里带上它，方便回查。
           C=$(git rev-parse --short HEAD 2>/dev/null || echo "?")
@@ -316,7 +330,11 @@ jobs:
 
       - name: 下载源码包
         run: |
-          make download -j"$(nproc)" || make download -j1 V=s
+          # 这一步要下 ~1 GB 源码包,网络慢是常态 —— 给足 30 分钟,
+          # 但【不能没有上限】,否则像 apt 那样卡到天荒地老。
+          timeout 1800 make download -j"$(nproc)" \
+            || { echo "并行下载超时,改成串行再试一次(串行更容易看出是哪个包卡住)";
+                 timeout 1800 make download -j1 V=s; }
 
       - name: 编译
         id: compile
@@ -324,7 +342,9 @@ jobs:
           set -o pipefail
           # 【提速】+1 是为了让 CPU 在等 I/O（下载/解包/configure）时不被空着。
           # GitHub 标准 runner 是 4 核 16GB，-j5 不会 OOM。
-          time make -j"$(($(nproc) + 1))" 2>&1 | tee /tmp/build.log
+          # 给个宽上限:冷构建实测约 60~70 分钟,3 小时足够;
+          # 但没有上限的话,万一卡在某个下载/configure 上会一直挂着。
+          time timeout 10800 make -j"$(($(nproc) + 1))" 2>&1 | tee /tmp/build.log
 
       - name: 编译失败诊断
         if: failure() && steps.compile.outcome == 'failure'
@@ -475,7 +495,7 @@ jobs:
         run: |
           set -eu
           TAG="${{ steps.ver.outputs.tag }}"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if timeout 60 gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             TAG="${TAG}-$(git rev-parse --short HEAD)"
           fi
           FWNAME=$(cd out && ls | grep sysupgrade | head -1)
