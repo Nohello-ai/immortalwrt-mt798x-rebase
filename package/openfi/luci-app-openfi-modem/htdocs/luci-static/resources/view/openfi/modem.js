@@ -26,9 +26,39 @@ function jparse(s) {
 var SIM_TXT = { 0: '未知', 1: '就绪', 2: '未插卡', 3: '需要 PIN', 4: '需要 PUK', 5: '故障' };
 var REG_TXT = { 0: '未注册', 1: '已注册', 2: '搜索中', 3: '被拒绝', 4: '未知', 5: '漫游' };
 
-function bars(n) {
-	n = parseInt(n, 10) || 0;
-	return '▮'.repeat(n) + '▯'.repeat(Math.max(0, 5 - n));
+/*
+ * 信号强弱 → 文字 + 颜色
+ *
+ * 【为什么不用 ▮▯ 那种方块字符】
+ *   手机上字体不一定带这两个码位,画出来是空方框或挤成一团,
+ *   比不画还难看。改成纯文字 + 颜色,任何设备上都读得懂。
+ *
+ * 【判断依据】用 RSRP(参考信号接收功率),它是负数,越接近 0 越好:
+ *   >= -85   强    绿
+ *   >= -100  中    黄
+ *   >= -110  弱    橙
+ *   更差     很差  红
+ */
+function sigLevel(rsrp) {
+	var r = parseInt(rsrp, 10);
+
+	if (isNaN(r) || r <= -1000)
+		return null;
+	if (r >= -85)
+		return { txt: '强', color: '#2e7d32' };
+	if (r >= -100)
+		return { txt: '中', color: '#f9a825' };
+	if (r >= -110)
+		return { txt: '弱', color: '#ef6c00' };
+	return { txt: '很差', color: '#c62828' };
+}
+
+/* 单个 dB 值的着色(RSRP/RSRQ/SINR 共用) */
+function sigColor(v, good, ok) {
+	v = parseInt(v, 10);
+	if (isNaN(v) || v <= -1000)
+		return '';
+	return v >= good ? 'color:#2e7d32' : (v >= ok ? 'color:#f9a825' : 'color:#c62828');
 }
 
 function tempTxt(v) {
@@ -59,12 +89,23 @@ function buildStatus(st) {
 		row(_('运营商'), st.operator || '—'),
 		row(_('注网'), REG_TXT[st.reg] !== undefined ? _(REG_TXT[st.reg]) : _('未知')),
 		row(_('制式 / 频段'), (st.network || '—') + (st.band ? ' / B' + st.band : '')),
-		row(_('信号'), [
-			E('strong', {}, bars(st.bars)), ' ',
-			'RSRP ' + (st.rsrp <= -1000 ? '—' : st.rsrp + ' dBm'),
-			' RSRQ ' + (st.rsrq <= -1000 ? '—' : st.rsrq + ' dB'),
-			' SINR ' + (st.sinr <= -1000 ? '—' : st.sinr + ' dB')
-		]),
+		row(_('信号'), (function () {
+			var lv = sigLevel(st.rsrp);
+			var out = [];
+
+			if (lv)
+				out.push(E('strong', { 'style': 'color:' + lv.color }, lv.txt), ' ');
+
+			out.push(E('span', { 'style': sigColor(st.rsrp, -85, -100) },
+				'RSRP ' + (st.rsrp <= -1000 ? '—' : st.rsrp + ' dBm')));
+			out.push(' ');
+			out.push(E('span', { 'style': sigColor(st.rsrq, -10, -15) },
+				'RSRQ ' + (st.rsrq <= -1000 ? '—' : st.rsrq + ' dB')));
+			out.push(' ');
+			out.push(E('span', { 'style': sigColor(st.sinr, 13, 0) },
+				'SINR ' + (st.sinr <= -1000 ? '—' : st.sinr + ' dB')));
+			return out;
+		})()),
 		row(_('模组温度'), 'SOC ' + tempTxt(st.temp_soc) + ' / PA ' + tempTxt(st.temp_pa)),
 		row(_('数据口'), st.ifname || '—'),
 		row(_('IP'), st.ipaddr || '—'),
@@ -122,17 +163,20 @@ return view.extend({
 		 * 5G 模组用哪种 USB 数据通道,决定 WAN 怎么出来:
 		 *   NCM(5)   wwan0  多包聚合,更快、更干净
 		 *   RNDIS(3) usb0   兼容性最好,是模组出厂默认
-		 * 开机由 /usr/sbin/openfi-usbmode 自动探测并记住结果,一般不用手动干预。
-		 * 这里的按钮只是给它一个入口。
+		 *
+		 * 【为什么不自动探测】
+		 *   探测要逐个模式试,每次都得切模式 → 模组重新枚举 → 网络断十几秒。
+		 *   做成自动的,每次开机都要断一次网,还可能反复切。
+		 *   所以改成手动:点哪个切哪个,切完自己稍等再刷新。
 		 */
 		var UM_BIN = '/usr/sbin/openfi-usbmode';
-		/* 只列可能出现在 state 里的;完整映射在脚本的 mode_name() 里 */
-		var UM_MODE = { 0: 'RMNET', 1: 'ECM', 2: 'MBIM', 3: 'RNDIS', 4: 'QMI', 5: 'NCM' };
+		var UM_MODE = { 1: 'ECM', 3: 'RNDIS', 5: 'NCM' };
 
-		/* state 文件是 key=value 一行一条 */
-		function umParse(s) {
+		var umBody = E('div', {}, E('p', { 'class': 'spinning' }, _('读取中…')));
+
+		function umParse(txt) {
 			var o = {};
-			(s || '').split('\n').forEach(function (l) {
+			(txt || '').split('\n').forEach(function (l) {
 				var i = l.indexOf('=');
 				if (i > 0)
 					o[l.slice(0, i)] = l.slice(i + 1);
@@ -140,129 +184,63 @@ return view.extend({
 			return o;
 		}
 
-		function umFmtTime(t) {
-			t = parseInt(t, 10);
-			if (!t)
-				return '-';
-			var d = new Date(t * 1000);
-			function p2(n) { return (n < 10 ? '0' : '') + n; }
-			return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' '
-			     + p2(d.getHours()) + ':' + p2(d.getMinutes());
-		}
-
-		var umBody = E('div', {}, E('p', { 'class': 'spinning' }, _('读取中…')));
-
 		function umRefresh() {
 			return fs.exec(UM_BIN, [ 'show' ]).then(function (r) {
-				var raw = (r.stdout || '').trim();
-				if (!raw || raw.indexOf('=') < 0) {
-					/* 脚本在没探测过时输出的是中文句子,不是 key=value */
-					dom.content(umBody, E('p', {}, _('还没探测过。重启一次,或点下面的「重新探测」。')));
-					return;
-				}
-				var st = umParse(raw);
-				var failed = (st.failed || '').trim();
+				var st = umParse(r.stdout);
+				var cur = st.mode || '';
 
-				var rows = [
-					[ _('当前模式'), (UM_MODE[st.mode] || _('未知')) + ' (' + (st.mode || '?') + ')' ],
-					[ _('网卡'), st.dev || '-' ],
-					[ _('协议'), st.proto || '-' ],
-					[ _('探测时间'), umFmtTime(st.ts) ],
-					[ _('失败记忆'), failed
-						? failed.split(/\s+/).map(function (m) {
-							return UM_MODE[m] || m;
-						  }).join('、') + _('(这些不会再试,7 天后自动清空)')
-						: _('无') ]
-				];
-
-				var tbl = E('table', { 'class': 'table' }, rows.map(function (kv) {
-					return E('tr', { 'class': 'tr' }, [
-						E('td', { 'class': 'td left', 'style': 'width:34%' }, kv[0]),
-						E('td', { 'class': 'td left' }, kv[1])
-					]);
-				}));
-
-				dom.content(umBody, tbl);
+				dom.content(umBody, E('table', { 'class': 'table' }, [
+					E('tr', { 'class': 'tr' }, [
+						E('td', { 'class': 'td left', 'style': 'width:34%' }, _('当前模式')),
+						E('td', { 'class': 'td left' },
+							(UM_MODE[cur] || _('未知')) + (cur ? ' (' + cur + ')' : ''))
+					]),
+					E('tr', { 'class': 'tr' }, [
+						E('td', { 'class': 'td left' }, _('网卡驱动')),
+						E('td', { 'class': 'td left' }, st.iface || '-')
+					])
+				]));
 			}).catch(function () {
-				dom.content(umBody, E('p', {}, _('读取失败(可能没装 openfi-usbmode)。')));
+				dom.content(umBody, E('p', {}, _('读不到(可能没装 openfi-usbmode)。')));
 			});
 		}
 
-		/*
-		 * 探测要 1~2 分钟(每次切模式都要等 USB 重新枚举),
-		 * 而 rpcd 的 fs.exec 约 30 秒就超时 —— 上一版就是同步等,
-		 * 界面上直接报 "Error: XHR request timed out"。
-		 * 所以改成:start 点火(立刻返回)→ 轮询 status 看进度。
-		 */
-		var umTimer = null;
-
-		function umPoll() {
-			return fs.exec(UM_BIN, [ 'status' ]).then(function (r) {
-				var raw = (r.stdout || '').trim();
-				var parts = raw.split('---');
-				var head = umParse(parts[0] || '');
-				var st = umParse(parts[1] || '');
-
-				if (head.status === 'running') {
-					dom.content(umBody, E('p', { 'class': 'spinning' },
-						_('正在探测(约 1~2 分钟,期间网络会断十几秒)…')));
-					if (!umTimer)
-						umTimer = window.setInterval(function () { umPoll(); }, 3000);
-					return;
-				}
-
-				if (umTimer) {
-					window.clearInterval(umTimer);
-					umTimer = null;
-				}
-				if (head.status === 'done')
-					ui.addNotification(null, E('p', {}, _('探测完成')), 'info');
-				else if (head.status === 'failed')
-					ui.addNotification(null, E('p', {}, _('探测失败,保持原模式')), 'warning');
-
-				/* 结束(或本来就没在跑)→ 回到正常的详情显示 */
-				return umRefresh();
-			}).catch(function () { return umRefresh(); });
+		/* 点一下就发切换命令,不等结果 ——
+		   切模式必然要重新枚举,等下去只会撞上 rpcd 的超时。 */
+		function umSwitch(mode) {
+			return function () {
+				return fs.exec(UM_BIN, [ 'set', String(mode) ]).then(function (r) {
+					ui.addNotification(null, E('p', {}, r.stdout || _('已发出切换命令')),
+						r.code === 0 ? 'info' : 'warning');
+					window.setTimeout(function () { umRefresh(); }, 15000);
+				}).catch(function (e) {
+					ui.addNotification(null, E('p', {}, _('失败:') + ' ' + e), 'error');
+				});
+			};
 		}
 
 		var umBox = E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, _('USB 数据模式')),
 			E('div', { 'class': 'cbi-section-descr' },
-				_('5G 模组用哪种 USB 数据通道,决定 WAN 怎么出来。'
-				+ 'NCM 更快更干净,RNDIS 兼容性最好(模组出厂默认)。'
-				+ '开机自动探测并记住结果,一般不需要手动干预。')),
+				_('5G 模组用哪种 USB 数据通道。模组出厂默认 RNDIS,能上网;'
+				+ '切成 NCM 通常更快。'
+				+ '切换时模组会重新枚举,网络断十几秒到一分钟,属正常。')),
 			umBody,
 			E('div', { 'class': 'cbi-page-actions' }, [
 				E('button', {
 					'class': 'btn cbi-button cbi-button-apply',
-					'click': ui.createHandlerFn(this, function () {
-						if (!confirm(_('重新探测会切换模组的 USB 模式,USB 要重新枚举,'
-						             + '网络会断十几秒,最长可能要 1~2 分钟。\n\n继续吗?')))
-							return;
-						/* ★ 不在这里等下 —— 只点火,进度交给 umPoll 轮询。
-						   同步等一定会撞上 rpcd 的 30 秒超时(XHR request timed out)。 */
-						return fs.exec(UM_BIN, [ 'start' ]).then(function (r) {
-							ui.addNotification(null,
-								E('p', {}, r.stdout || _('已开始探测')), 'info');
-							return umPoll();
-						}).catch(function (e) {
-							ui.addNotification(null,
-								E('p', {}, _('启动探测失败:') + ' ' + e), 'error');
-						});
-					})
-				}, _('重新探测')),
+					'click': ui.createHandlerFn(this, umSwitch(5))
+				}, _('切换到 NCM')),
 				' ',
 				E('button', {
 					'class': 'btn cbi-button cbi-button-reset',
-					'click': ui.createHandlerFn(this, function () {
-						if (!confirm(_('清除探测记录后,下次开机会重新试一遍(可能要 1~2 分钟)。\n\n继续吗?')))
-							return;
-						return fs.exec(UM_BIN, [ 'reset' ]).then(function () {
-							ui.addNotification(null, E('p', {}, _('已清除,下次开机重新探测')), 'info');
-							return umRefresh();
-						});
-					})
-				}, _('清除记录'))
+					'click': ui.createHandlerFn(this, umSwitch(3))
+				}, _('切换到 RNDIS')),
+				' ',
+				E('button', {
+					'class': 'btn cbi-button',
+					'click': ui.createHandlerFn(this, umRefresh)
+				}, _('刷新'))
 			])
 		]);
 
@@ -304,7 +282,7 @@ return view.extend({
 			atOut
 		]);
 
-		umPoll();
+		umRefresh();
 		poll.add(function () { return refresh(); }, POLL_SECS);
 
 		return E('div', {}, [

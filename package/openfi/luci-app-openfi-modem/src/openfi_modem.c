@@ -16,7 +16,12 @@ void md_state_init(struct md_state *s)
 	s->sim_slot = 1;
 	s->sim_slots = 1;
 	s->rssi = 99;
-	s->rsrp = s->rsrq = s->sinr = 0;
+	/* ★ 用 -1000 当"没读到"的哨兵,不要用 0。
+	 *
+	 *   0 是个合法的 RSRQ 值(满格),用 0 当哨兵会让"真读到 0"
+	 *   和"没读到"分不开 —— 收集时那句 `if (s->rsrp == -1000)`
+	 *   也就永远不成立,QCAINFO 没给上时 QENG 的兜底就废了。 */
+	s->rsrp = s->rsrq = s->sinr = -1000;
 	s->temp_soc = s->temp_pa = -1000;
 }
 
@@ -331,6 +336,223 @@ int md_parse_qeng_neighbour(const char *line, struct md_cell *c)
 	c->rsrq  = (n > 5) ? field_long(f[5], -1000) : -1000;
 	c->sinr  = (n > 6) ? field_long(f[6], -1000) : -1000;
 	return 0;
+}
+
+/* ---- +QENG 的连接状态 ----
+ *
+ * 第 2 个字段:CONNECT / DISCONNECT / NOCONN / SEARCH
+ * 只有 CONNECT 才算真的在线。
+ */
+int md_cell_state_online(const char *line)
+{
+	char tmp[512], *f[8];
+	int n;
+
+	if (!line)
+		return 0;
+	snprintf(tmp, sizeof(tmp), "%s", after_colon(line));
+	n = split_csv(tmp, f, 8);
+	if (n < 2)
+		return 0;
+	return strcmp(f[1], "CONNECT") == 0;
+}
+
+/* ---- +QCAINFO ----
+ *
+ * 真机实测:
+ *   +QCAINFO: "PCC",723360,100,NR N79,1,875,-92,-3,-66,9
+ *   下标:      0      1     2    3     4   5   6    7   8   9
+ *              PCC  ARFCN  带宽 频段   ?   PCI RSRP RSRQ RSSI SINR
+ *
+ * 比 +QENG 靠谱:那个的字段数随固件变,这个的布局固定。
+ */
+int md_parse_qcainfo(const char *line, struct md_cell *c)
+{
+	char tmp[512], *f[16];
+	int n;
+
+	if (!line || !c)
+		return -1;
+	memset(c, 0, sizeof(*c));
+	c->arfcn = c->pci = c->cells = -1;
+	c->rsrp = c->rsrq = c->sinr = -1000;
+
+	snprintf(tmp, sizeof(tmp), "%s", after_colon(line));
+	n = split_csv(tmp, f, 16);
+	if (n < 8)
+		return -1;
+	/* 第一段是载波类型:PCC(主载波)才是我们要的 */
+	if (strcmp(f[0], "PCC") != 0)
+		return -1;
+
+	c->arfcn = field_long(f[1], -1);
+	/* f[3] 是频段名,形如 "NR N79" —— 只留 "N79" 这种短标识 */
+	if (n > 3) {
+		const char *b = f[3];
+		const char *sp = strrchr(b, ' ');
+		snprintf(c->band, sizeof(c->band), "%s", sp ? sp + 1 : b);
+	}
+	if (n > 5)
+		c->pci = field_long(f[5], -1);
+	c->rsrp = (n > 6) ? field_long(f[6], -1000) : -1000;
+	c->rsrq = (n > 7) ? field_long(f[7], -1000) : -1000;
+	c->sinr = (n > 9) ? field_long(f[9], -1000) : -1000;
+	return 0;
+}
+
+/* ---- 运营商:MCC/MNC → 名字 ----
+ *
+ * 这块模组的 +COPS? 返回 +COPS: 0,0,"",11 —— 运营商名是【空字符串】,
+ * 但 +QNWINFO 里有 MCC/MNC(46000)。国内运营商就那么几个,
+ * 直接映射,比指望模组给名字可靠。
+ */
+const char *md_operator_from_plmn(const char *mccmnc)
+{
+	static const struct { const char *plmn; const char *name; } TBL[] = {
+		{ "46000", "中国移动" }, { "46002", "中国移动" },
+		{ "46004", "中国移动" }, { "46007", "中国移动" }, { "46008", "中国移动" },
+		{ "46001", "中国联通" }, { "46006", "中国联通" }, { "46009", "中国联通" },
+		{ "46003", "中国电信" }, { "46005", "中国电信" }, { "46011", "中国电信" },
+		{ "46012", "中国电信" },
+		{ "46015", "中国广电" }, { "46016", "中国广电" },
+		{ NULL, NULL }
+	};
+	int i;
+
+	if (!mccmnc || strlen(mccmnc) < 5)
+		return "";
+	for (i = 0; TBL[i].plmn; i++)
+		if (strcmp(mccmnc, TBL[i].plmn) == 0)
+			return TBL[i].name;
+	return "";
+}
+
+/* ---- 数据链路 ----
+ *
+ * 【为什么这里要读系统而不是问模组】
+ *   网卡名/IP/网关/DNS/收发字节,这些是【主机侧】的事 ——
+ *   模组只知道自己的 USB 链路,不知道 OpenWrt 把它叫 usb0 还是 wwan0。
+ *   之前这几个字段在 JSON 里一直是空的,就是因为压根没人填。
+ *
+ * 数据来源(都是标准 /proc 和 sysfs,不依赖外部命令):
+ *   /proc/net/route            默认路由 → 网卡名 + 网关
+ *   ioctl(SIOCGIFADDR)         取该网卡的 IPv4
+ *   /etc/resolv.conf           第一个 nameserver
+ *   /sys/class/net/<名字>/statistics/{rx,tx}_bytes
+ */
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+static int default_iface(char *out, size_t n, char *gw, size_t gn)
+{
+	FILE *f = fopen("/proc/net/route", "r");
+	char line[256];
+	int found = 0;
+
+	if (!f)
+		return -1;
+	/* 跳过表头 */
+	if (!fgets(line, sizeof(line), f)) {
+		fclose(f);
+		return -1;
+	}
+	while (fgets(line, sizeof(line), f)) {
+		char ifn[64];
+		unsigned long dest, gateway, flags;
+		unsigned int refcnt, use, metric, mtu, window, irtt;
+		unsigned long mask;
+
+		if (sscanf(line, "%63s %lx %lx %lx %u %u %u %lx %u %u %u",
+			   ifn, &dest, &gateway, &flags, &refcnt, &use, &metric,
+			   &mask, &mtu, &window, &irtt) < 4)
+			continue;
+		/* 默认路由:目标 0.0.0.0 且 RTF_UP|RTF_GATEWAY */
+		if (dest == 0 && (flags & 0x2)) {
+			copy_str(out, n, ifn);
+			if (gw && gn) {
+				struct in_addr a;
+
+				a.s_addr = (in_addr_t)gateway;
+				snprintf(gw, gn, "%s", inet_ntoa(a));
+			}
+			found = 1;
+			break;
+		}
+	}
+	fclose(f);
+	return found ? 0 : -1;
+}
+
+void md_fill_datalink(struct md_state *s)
+{
+	char gw[46] = "";
+	char path[128];
+	FILE *f;
+
+	if (!s)
+		return;
+	if (default_iface(s->ifname, sizeof(s->ifname), gw, sizeof(gw)) != 0) {
+		s->ifname[0] = '\0';
+		return;
+	}
+	copy_str(s->gateway, sizeof(s->gateway), gw);
+
+	/* IP:用 ioctl 取,不依赖 ip 命令 */
+	{
+		int fd = socket(AF_INET, SOCK_DGRAM, 0);
+		struct ifreq ifr;
+
+		if (fd >= 0) {
+			memset(&ifr, 0, sizeof(ifr));
+			snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", s->ifname);
+			if (ioctl(fd, SIOCGIFADDR, &ifr) == 0) {
+				struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
+
+				snprintf(s->ipaddr, sizeof(s->ipaddr), "%s",
+					 inet_ntoa(sin->sin_addr));
+			}
+			close(fd);
+		}
+	}
+
+	/* DNS:resolv.conf 里第一个 nameserver */
+	f = fopen("/etc/resolv.conf", "r");
+	if (f) {
+		char line[128];
+
+		while (fgets(line, sizeof(line), f)) {
+			char ip[64];
+
+			if (sscanf(line, "nameserver %63s", ip) == 1) {
+				copy_str(s->dns1, sizeof(s->dns1), ip);
+				break;
+			}
+		}
+		fclose(f);
+	}
+
+	/* 收发字节:sysfs 直接给 */
+	snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/rx_bytes", s->ifname);
+	f = fopen(path, "r");
+	if (f) {
+		long long v = 0;
+
+		if (fscanf(f, "%lld", &v) == 1)
+			s->rx_bytes = (long)v;
+		fclose(f);
+	}
+	snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/tx_bytes", s->ifname);
+	f = fopen(path, "r");
+	if (f) {
+		long long v = 0;
+
+		if (fscanf(f, "%lld", &v) == 1)
+			s->tx_bytes = (long)v;
+		fclose(f);
+	}
 }
 
 /* ---- +QTEMP ----

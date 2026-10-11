@@ -168,5 +168,40 @@ int main(void)
 		md_state_init(NULL);
 	}
 
+
+	/* ---- +QCAINFO(真机报文,信号解析的主力)---- */
+	printf("── +QCAINFO ──\n");
+	{
+		struct md_cell c;
+		/* 真机原样抓下来的 */
+		T_EQ_INT(md_parse_qcainfo("+QCAINFO: \"PCC\",723360,100,NR N79,1,875,-92,-3,-66,9", &c), 0);
+		T_EQ_INT(c.rsrp, -92);
+		T_EQ_INT(c.rsrq, -3);
+		T_EQ_INT(c.sinr, 9);
+		T_EQ_INT(c.pci, 875);
+		T_EQ_STR(c.band, "N79");
+		/* 非 PCC(比如 SCC 辅载波)不采用 */
+		T_EQ_INT(md_parse_qcainfo("+QCAINFO: \"SCC\",723360,100,NR N79,1,875,-92,-3,-66,9", &c), -1);
+		/* 字段不够就拒绝,不能瞎猜 */
+		T_EQ_INT(md_parse_qcainfo("+QCAINFO: \"PCC\",723360", &c), -1);
+	}
+
+	/* ---- 连接状态(QENG 第 2 字段,比 CREG 可靠)---- */
+	printf("── 在线状态 ──\n");
+	T_EQ_INT(md_cell_state_online("+QENG: \"servingcell\",\"CONNECT\",\"NR5G-SA\"") != 0, 1);
+	T_EQ_INT(md_cell_state_online("+QENG: \"servingcell\",\"NOCONN\",\"LTE\"") != 0, 0);
+	T_EQ_INT(md_cell_state_online("+QENG: \"servingcell\",\"DISCONNECT\"") != 0, 0);
+	T_EQ_INT(md_cell_state_online(NULL) != 0, 0);
+
+	/* ---- 运营商 MCC/MNC 映射(COPS 给空串时的兜底)---- */
+	printf("── 运营商映射 ──\n");
+	T_EQ_STR(md_operator_from_plmn("46000"), "中国移动");
+	T_EQ_STR(md_operator_from_plmn("46001"), "中国联通");
+	T_EQ_STR(md_operator_from_plmn("46011"), "中国电信");
+	T_EQ_STR(md_operator_from_plmn("46015"), "中国广电");
+	T_EQ_STR(md_operator_from_plmn("99999"), "");
+	T_EQ_STR(md_operator_from_plmn("460"), "");
+	T_EQ_STR(md_operator_from_plmn(NULL), "");
+
 	T_SUMMARY();
 }

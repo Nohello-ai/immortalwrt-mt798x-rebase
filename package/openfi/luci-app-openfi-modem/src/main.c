@@ -46,20 +46,6 @@ static volatile sig_atomic_t g_stop;
  * -Wformat-truncation(而且我们开了 -Werror)。这里明确按目标长度截断,
  * 语义清楚,编译器也不会误报。
  */
-static void copy_str(char *dst, size_t n, const char *src)
-{
-	size_t l;
-
-	if (!dst || !n)
-		return;
-	if (!src)
-		src = "";
-	l = strlen(src);
-	if (l >= n)
-		l = n - 1;
-	memcpy(dst, src, l);
-	dst[l] = '\0';
-}
 
 static void on_term(int sig) { (void)sig; g_stop = 1; }
 
@@ -199,6 +185,22 @@ static void collect_state(struct at_port *p, const struct md_cfg *cfg, struct md
 		if (l)
 			md_parse_cops(l, s->operator, sizeof(s->operator), NULL, 0);
 	}
+	/* ★ 这块模组的 +COPS? 返回 +COPS: 0,0,"",11 —— 运营商名是空的。
+	   用 +QNWINFO 里的 MCC/MNC(如 46000)兜底,映射成名字。 */
+	if (!s->operator[0] && ask(p, "AT+QNWINFO", cfg->timeout_ms, &r) == 0) {
+		l = at_find(&r, "+QNWINFO:");
+		if (l) {
+			char fields[8][64];
+			int n = at_csv(l, fields, 8);
+
+			if (n >= 2) {
+				const char *op = md_operator_from_plmn(fields[1]);
+
+				if (op[0])
+					copy_str(s->operator, sizeof(s->operator), op);
+			}
+		}
+	}
 	if (ask(p, "AT+CEREG?", cfg->timeout_ms, &r) == 0) {
 		l = at_find(&r, "+CEREG:");
 		if (!l)
@@ -211,17 +213,46 @@ static void collect_state(struct at_port *p, const struct md_cfg *cfg, struct md
 			s->reg = md_parse_creg(l);
 	}
 
-	/* 服务小区(RSRP/RSRQ/SINR + 制式/频段)*/
+	/* 服务小区(RSRP/RSRQ/SINR + 制式/频段)
+	 *
+	 * ★ 优先用 +QCAINFO:它的字段布局固定。
+	 *   +QENG="servingcell" 的字段数【随固件版本变】—— 真机上实测比我们
+	 *   注释里记的多一个,导致 RSRP/RSRQ/SINR 整体错位,解析出 RSRP=+100
+	 *   这种不可能的值(RSRP 一定是负数)。所以 QENG 只当兜底。
+	 */
+	if (ask(p, "AT+QCAINFO", cfg->timeout_ms, &r) == 0) {
+		struct md_cell c;
+
+		l = at_find(&r, "+QCAINFO:");
+		if (l && md_parse_qcainfo(l, &c) == 0) {
+			snprintf(s->band, sizeof(s->band), "%s", c.band);
+			s->rsrp = c.rsrp;
+			s->rsrq = c.rsrq;
+			s->sinr = c.sinr;
+		}
+	}
 	if (ask(p, "AT+QENG=\"servingcell\"", cfg->timeout_ms * 2, &r) == 0) {
 		struct md_cell c;
 
 		l = at_find(&r, "+QENG:");
 		if (l && md_parse_qeng_serving(l, &c) == 0) {
+			/* 制式以 QENG 为准(它一定给)*/
 			snprintf(s->network, sizeof(s->network), "%s", c.rat);
-			snprintf(s->band, sizeof(s->band), "%s", c.band);
-			s->rsrp = c.rsrp;
-			s->rsrq = c.rsrq;
-			s->sinr = c.sinr;
+			if (!s->band[0])
+				snprintf(s->band, sizeof(s->band), "%s", c.band);
+			/* 信号只有 QCAINFO 没给上时才用 QENG 的 */
+			if (s->rsrp == -1000)
+				s->rsrp = c.rsrp;
+			if (s->rsrq == -1000)
+				s->rsrq = c.rsrq;
+			if (s->sinr == -1000)
+				s->sinr = c.sinr;
+
+			/* ★ 注网状态:QENG 第 2 个字段(CONNECT/DISCONNECT/NOCONN)
+			   比 CREG/CEREG 的 stat 可靠 —— 真机上 CREG 一直是 0(未注册),
+			   但模组明明连着、能上网。 */
+			if (md_cell_state_online(l))
+				s->reg = MD_REG_HOME;
 		}
 	}
 	/* 有些固件靠 +QNWINFO 报制式 */
@@ -245,6 +276,11 @@ static void collect_state(struct at_port *p, const struct md_cfg *cfg, struct md
 				md_parse_qtemp(r.lines[i], &s->temp_soc, &s->temp_pa);
 		}
 	}
+
+	/* ★ 数据链路(网卡名/IP/网关/DNS/收发字节/在线时长)
+	   这些模组不知道 —— 是主机侧的事,从 /proc 和 sysfs 读。
+	   之前这几个字段在 JSON 里一直是空的,就是因为压根没人填。 */
+	md_fill_datalink(s);
 }
 
 /* ---------------- 输出 ---------------- */

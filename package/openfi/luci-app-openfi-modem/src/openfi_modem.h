@@ -13,6 +13,31 @@
 #define OPENFI_MODEM_H
 
 #include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
+/*
+ * 截断式字符串拷贝(一定留 '\0')。
+ *
+ * 原来只在 main.c 里定义。现在 openfi_modem.c 也要用(填数据链路那几个字段),
+ * 所以提到头文件里 —— 两边共用一份,避免各写各的慢慢走样。
+ */
+static inline void copy_str(char *dst, size_t n, const char *src)
+{
+	size_t i;
+
+	if (!dst || n == 0)
+		return;
+	if (!src) {
+		dst[0] = '\0';
+		return;
+	}
+	/* 手写循环而不是 snprintf:截断时 snprintf 会触发
+	   -Wformat-truncation(编译器不知道我们就是要截断)。 */
+	for (i = 0; i + 1 < n && src[i]; i++)
+		dst[i] = src[i];
+	dst[i] = '\0';
+}
 
 #define MD_STR      32
 #define MD_MAX_CELLS 8
@@ -114,8 +139,31 @@ int md_parse_qeng_serving(const char *line, struct md_cell *c);
 /* +QENG: "neighbourcell ..." 一行里可能给多个邻区 —— 只取第一个可用的 */
 int md_parse_qeng_neighbour(const char *line, struct md_cell *c);
 
+/* +QCAINFO: "PCC",723360,100,NR N79,1,875,-92,-3,-66,9 → 信号
+ *
+ * 【为什么优先用它而不是 +QENG】
+ *   +QENG="servingcell" 的字段布局【随固件版本变】:同样是 NR5G-SA,
+ *   真机实测字段比我们注释里记的多一个,导致 RSRP/RSRQ/SINR 整体错位 ——
+ *   解析出来 RSRP 是 +100(不可能,RSRP 一定是负数)。
+ *   +QCAINFO 的布局是固定的:
+ *       "PCC",<ARFCN>,<带宽>,<频段名>,<?>,<PCI>,<RSRP>,<RSRQ>,<RSSI>,<SINR>
+ *   实测稳定,数值也合理(-92 / -3 / -66 / 9)。
+ */
+int md_parse_qcainfo(const char *line, struct md_cell *c);
+
 /* +QTEMP: "soc-thermal",54 → 按名字取值 */
 int md_parse_qtemp(const char *line, long *soc, long *pa);
+
+/* +QENG 的第 2 个字段是连接状态(CONNECT/DISCONNECT/NOCONN)。
+ * 比 CREG/CEREG 的 stat 可靠 —— 真机上 CREG 一直是 0,但模组明明连着。 */
+int md_cell_state_online(const char *qeng_line);
+
+/* MCC/MNC(如 46000)→ 运营商名。认不出来就返回空串 */
+const char *md_operator_from_plmn(const char *mccmnc);
+
+/* 从系统里填数据链路信息(网卡名/IP/网关/DNS/收发字节/在线时长)。
+ * 这些模组自己不知道 —— 是主机侧的事,所以从 /proc 和 sysfs 读。 */
+void md_fill_datalink(struct md_state *s);
 
 /* +CGSN / +GSN → IMEI(纯数字,15 位) */
 int md_parse_imei(const char *line, char *out, size_t n);

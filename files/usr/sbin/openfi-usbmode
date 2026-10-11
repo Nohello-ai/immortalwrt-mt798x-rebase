@@ -233,15 +233,30 @@ set)
 	fi
 
 	echo "正在切到 $(mode_name "$target")…"
-	if at_set_mode "$target"; then
-		# 记下来,供 show 显示(不等它枚举完 —— 那要几十秒)
-		state_set "$target" "" "$(mode_proto "$target")" 2>/dev/null || true
-		echo "已发出切换命令。模组会重新枚举,网络断十几秒到一分钟,请稍后刷新页面。"
-		exit 0
-	else
+
+	if ! at_set_mode "$target"; then
 		echo "切换命令被模组拒绝(可能不支持这个模式)" >&2
 		exit 1
 	fi
+
+	state_set "$target" "" "$(mode_proto "$target")" 2>/dev/null || true
+
+	# ★★★ 关键一步:光改 AT+QCFG="usbnet",N 是【不生效】的。
+	#
+	#   真机上验证过:发完 usbnet 命令后,模组照旧用原来的驱动
+	#   (usb0 的驱动还是 rndis_host,MAC 也没变),
+	#   必须让它重新枚举一次,新配置才会应用。
+	#
+	#   这台模组(RM500U-CN)没有单独的"重新枚举"AT 命令,
+	#   用 AT+CFUN=1,1(重启模组)让它重新枚举 —— 实测有效:
+	#   重启后 usb0 的驱动从 rndis_host 变成 cdc_ncm,网也正常恢复。
+	#
+	#   代价:模组重启期间(约 30~60 秒)没网,这是切模式不可避免的。
+	echo "正在重启模组让它按新模式重新枚举(约 30~60 秒没网)…"
+	at_send 'AT+CFUN=1,1' >/dev/null 2>&1
+
+	echo "已切换。模组正在重新枚举,网络会在 30~60 秒内恢复,之后刷新页面。"
+	exit 0
 	;;
 
 --library) : ;;

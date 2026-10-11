@@ -33,27 +33,18 @@
 				"/usr/sbin/openfi-usbmode show": [
 					"exec"
 				],
-				"/usr/sbin/openfi-usbmode auto": [
+				"/usr/sbin/openfi-usbmode set 1": [
 					"exec"
 				],
-				"/usr/sbin/openfi-usbmode reset": [
+				"/usr/sbin/openfi-usbmode set 3": [
 					"exec"
 				],
-				"/etc/openfi_usbmode.state": [
-					"read"
-				],
-				"/usr/sbin/openfi-usbmode start": [
+				"/usr/sbin/openfi-usbmode set 5": [
 					"exec"
-				],
-				"/usr/sbin/openfi-usbmode status": [
-					"exec"
-				],
-				"/var/run/openfi-usbmode.progress": [
-					"read"
 				]
 			},
 			"uci": [
-				"openfi_modem"
+				"openfi"
 			]
 		},
 		"write": {
@@ -87,27 +78,18 @@
 				"/usr/sbin/openfi-usbmode show": [
 					"exec"
 				],
-				"/usr/sbin/openfi-usbmode auto": [
+				"/usr/sbin/openfi-usbmode set 1": [
 					"exec"
 				],
-				"/usr/sbin/openfi-usbmode reset": [
+				"/usr/sbin/openfi-usbmode set 3": [
 					"exec"
 				],
-				"/etc/openfi_usbmode.state": [
-					"read"
-				],
-				"/usr/sbin/openfi-usbmode start": [
+				"/usr/sbin/openfi-usbmode set 5": [
 					"exec"
-				],
-				"/usr/sbin/openfi-usbmode status": [
-					"exec"
-				],
-				"/var/run/openfi-usbmode.progress": [
-					"read"
 				]
 			},
 			"uci": [
-				"openfi_modem"
+				"openfi"
 			]
 		}
 	}
