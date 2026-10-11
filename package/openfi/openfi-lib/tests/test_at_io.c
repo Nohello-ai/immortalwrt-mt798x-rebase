@@ -74,6 +74,19 @@ int main(void)
 	char slave_name[128];
 	pid_t child;
 
+	/*
+	 * 锁文件必须在【第一次 at_open 之前】就指到 /tmp。
+	 * 第一版把 setenv 写在锁测试块里(那时 port 早就用默认路径开好了),
+	 * 于是两个 at_port 用的是两个不同的锁文件 —— 当然测不出互斥。
+	 */
+	{
+		static char _lp[128];
+		snprintf(_lp, sizeof(_lp), "/tmp/openfi-test-at-%d.lock", (int)getpid());
+		unlink(_lp);
+		setenv("OPENFI_AT_LOCK", _lp, 1);
+		setenv("OPENFI_AT_LOCK_WAIT", "1", 1);   /* 等待 1 秒,别让测试真等 12 秒 */
+	}
+
 	printf("── 建立 pty + 启动假模组 ──\n");
 	if (openpty(&master, &slave, slave_name, NULL, NULL) != 0) {
 		printf("  (本机没有 pty,跳过集成测试)\n");
@@ -135,6 +148,34 @@ int main(void)
 		T_EQ_INT(r.result, AT_RES_TIMEOUT);
 		T_OK(ms >= 700 && ms < 2500);      /* 超时真的生效了,不是秒回也不是卡死 */
 		printf("     实际等了 %.0f ms(设定 800)\n", ms);
+	}
+
+	printf("── ★ 串口锁:两个使用者不能同时占着 ──\n");
+	{
+		struct at_port p2;
+		char lockpath[128];
+
+		snprintf(lockpath, sizeof(lockpath), "%s", getenv("OPENFI_AT_LOCK"));
+
+		/* 此时 port 正拿着锁 —— 再来一个应该等超时后失败,而不是挤进去 */
+		T_EQ_INT(at_open(&p2, port.path, 115200), -1);
+		T_OK(p2.fd == -1);
+		T_OK(p2.lock_fd == -1);
+
+		/* 放掉之后必须马上能拿到 —— 否则锁就变成"用了就再也拿不回来" */
+		at_close(&port);
+		T_EQ_INT(at_open(&p2, port.path, 115200), 0);
+		T_OK(p2.lock_fd >= 0);
+		at_close(&p2);
+
+		/* 再开一次,确认锁真的被释放了(没有留下残留状态) */
+		{
+			struct at_port p3;
+			T_EQ_INT(at_open(&p3, p2.path, 115200), 0);
+			T_OK(p3.lock_fd >= 0);
+			at_close(&p3);
+		}
+		unlink(lockpath);
 	}
 
 	printf("── 关闭 + 收尾 ──\n");

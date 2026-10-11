@@ -4,6 +4,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,52 @@ static speed_t baud_to_speed(int baud)
 	}
 }
 
+/*
+ * 拿串口锁。成功 0,超时 -1,拿不到锁文件时返回 0(退化成无锁,不阻塞功能)。
+ *
+ * 用 flock(LOCK_EX) —— 进程退出时内核自动释放,不会像"写 pid 文件"那样
+ * 在崩溃后留下死锁。
+ */
+static int at_lock_acquire(struct at_port *p)
+{
+	const char *lf = getenv("OPENFI_AT_LOCK");
+	const char *ws = getenv("OPENFI_AT_LOCK_WAIT");
+	int wait_ms = ws ? atoi(ws) * 1000 : AT_LOCK_WAIT_MS;
+	int waited = 0;
+
+	if (!lf || !*lf)
+		lf = AT_LOCK_DEFAULT_PATH;
+
+	p->lock_fd = open(lf, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+	if (p->lock_fd < 0)
+		return 0;	/* 路径不可写(比如 /var/run 还没建)——不因此失败 */
+
+	while (flock(p->lock_fd, LOCK_EX | LOCK_NB) != 0) {
+		if (errno != EWOULDBLOCK) {
+			close(p->lock_fd);
+			p->lock_fd = -1;
+			return 0;
+		}
+		if (waited >= wait_ms) {
+			close(p->lock_fd);
+			p->lock_fd = -1;
+			return -1;	/* 别人占着,等超时了 */
+		}
+		usleep(100 * 1000);
+		waited += 100;
+	}
+	return 0;
+}
+
+static void at_lock_release(struct at_port *p)
+{
+	if (p->lock_fd >= 0) {
+		flock(p->lock_fd, LOCK_UN);
+		close(p->lock_fd);
+		p->lock_fd = -1;
+	}
+}
+
 int at_open(struct at_port *p, const char *path, int baud)
 {
 	struct termios tio;
@@ -39,17 +86,25 @@ int at_open(struct at_port *p, const char *path, int baud)
 		return -1;
 	memset(p, 0, sizeof(*p));
 	p->fd = -1;
+	p->lock_fd = -1;
 	snprintf(p->path, sizeof(p->path), "%s", path);
+
+	/* 先拿锁再开串口 —— 顺序反了的话,拿到锁之前就已经在跟别人抢了 */
+	if (at_lock_acquire(p) != 0)
+		return -1;
 
 	/* O_NONBLOCK:不要让 open() 因为 modem control line 卡住;
 	   开完再用 select 控制读超时。 */
 	p->fd = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
-	if (p->fd < 0)
+	if (p->fd < 0) {
+		at_lock_release(p);
 		return -1;
+	}
 
 	if (tcgetattr(p->fd, &tio) != 0) {
 		close(p->fd);
 		p->fd = -1;
+		at_lock_release(p);
 		return -1;
 	}
 
@@ -79,10 +134,13 @@ int at_open(struct at_port *p, const char *path, int baud)
 
 void at_close(struct at_port *p)
 {
-	if (p && p->fd >= 0) {
+	if (!p)
+		return;
+	if (p->fd >= 0) {
 		close(p->fd);
 		p->fd = -1;
 	}
+	at_lock_release(p);
 }
 
 int at_write_raw(struct at_port *p, const char *data, size_t len)

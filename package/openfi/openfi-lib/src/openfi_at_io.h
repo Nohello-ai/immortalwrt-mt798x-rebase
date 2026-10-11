@@ -18,8 +18,32 @@
 
 struct at_port {
 	int fd;
+	int lock_fd;		/* 串口锁;拿不到时为 -1(退化成无锁) */
 	char path[128];
 };
+
+/*
+ * 串口锁。
+ *
+ * 【为什么需要】
+ *   AT 口是独占资源,但系统里有【三方】会用它:
+ *     · openfi-modem 的采样进程(每隔几秒问一次模组)
+ *     · openfi-sms 的收发
+ *     · files/usr/sbin/openfi-usbmode(开机探测 USB 数据模式)
+ *   谁也不锁的话,两个进程的 AT 命令会互相插话 ——
+ *   一方把另一方的响应读走,两边都超时失败,而且现象很随机。
+ *
+ * 【和 shell 侧对齐】
+ *   shell 那边(at.sh / openfi-usbmode)用:
+ *       锁文件 /var/run/openfi-at.lock
+ *       最长等 12 秒
+ *   这里用完全相同的文件和超时,所以 C 程序和 shell 脚本能互斥。
+ *
+ * 【覆盖】
+ *   OPENFI_AT_LOCK 可以改锁文件路径(测试用,指到 /tmp)。
+ */
+#define AT_LOCK_DEFAULT_PATH "/var/run/openfi-at.lock"
+#define AT_LOCK_WAIT_MS      12000
 
 /*
  * 打开串口并配成 raw 模式。
