@@ -151,13 +151,18 @@ mediatek_setup_interfaces()
 	netcraze,nap-630|\
 	netgear,eax17|\
 	netgear,wax220|\
-	openfi,6c|\
 	tplink,f65-v1|\
 	ubnt,unifi-6-plus|\
 	wavlink,wl-wn573hx3|\
 	widelantech,wap430x|\
 	zyxel,nwa50ax-pro)
 		ucidef_set_interface_lan "eth0"
+		;;
+	openfi,6c)
+		# 实体口是 LAN(gmac1 = eth1),WAN 是 USB 模组的 RNDIS 网口 usb0。
+		# 【不能沿用 eth0】—— 那是 gmac0 那条 2500base-x 固定链路,
+		# 板上没有对应接口、也没有 PHY,把它当 LAN 会得到一块没有网络的板子。
+		ucidef_set_interfaces_lan_wan "eth1" "usb0"
 		;;
 	viettel,32x6|\
 	wirelesstag,zx7981pd-ubootmod)
@@ -412,6 +417,11 @@ mediatek_setup_macs()
 		;;
 	yuncore,ax835)
 		label_mac=$(mtd_get_mac_binary "Factory" 0x4)
+		;;
+	openfi,6c)
+		# 实体口的 MAC 由 dts 的 Factory@0x4 提供(见 dts 里的 nvmem-cells);
+		# LAN 用它的后一个地址。这是原厂的做法。
+		lan_mac=$(macaddr_add $(cat /sys/class/net/eth1/address) 1)
 		;;
 	zhao,7981r128)
 		lan_mac=$(mtd_get_mac_binary "Factory" 0x04)

@@ -378,6 +378,15 @@
  *    (glinet-gl-mt3000 是这样写的,直接用整个 Factory 分区)
  */
 &wifi {
+	/*
+	 * 整块读 Factory 当 EEPROM(校准数据 + WiFi MAC)。
+	 *
+	 * 6.6 那棵树就是这么写的(写在 &wbsys 节点上)。
+	 * 25.12 的闭源驱动虽然能兜底去裸 MTD 找 "Factory"/"factory" 分区,
+	 * 但 MTK 官方参考板(mt7981-rfb 的 overlay)也是显式写的 ——
+	 * 有兜底不代表该依赖兜底,写明白更稳。
+	 */
+	mediatek,mtd-eeprom = <&factory 0>;
 	status = "okay";
 };
 
