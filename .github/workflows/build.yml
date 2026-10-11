@@ -198,7 +198,7 @@ jobs:
 
       # ---------------- 编译缓存（五层）----------------
       - name: ① 缓存 dl/（源码包）
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: dl
           key: ofc25-dl-${{ hashFiles('feeds.conf.default') }}
@@ -206,7 +206,7 @@ jobs:
             ofc25-dl-
 
       - name: ② 缓存 staging_dir + toolchain（省掉重建工具链 ~40 分钟）
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             staging_dir
@@ -216,7 +216,7 @@ jobs:
             ofc25-stage-${{ runner.arch }}-
 
       - name: ③ 缓存 build_dir/host（省掉重编宿主机工具 ~5-10 分钟）
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: build_dir/host
           key: ofc25-host-${{ runner.arch }}-${{ hashFiles('include/kernel-version.mk', 'feeds.conf.default', 'toolchain/gcc/Config.version') }}
@@ -224,7 +224,7 @@ jobs:
             ofc25-host-${{ runner.arch }}-
 
       - name: ④ 缓存内核编译目录（省掉每次重编内核 ~8-15 分钟）
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: build_dir/target-*/linux-mediatek_filogic
           # key 里带 kernel-version.mk：内核版本一变自动失效，不会拿到错的内核
@@ -357,6 +357,48 @@ jobs:
         run: |
           staging_dir/host/bin/ccache -s 2>/dev/null || ccache -s 2>/dev/null || echo "（首次构建，ccache 还没生成）"
           du -sh .ccache dl staging_dir build_dir/host 2>/dev/null || true
+
+      # ---- 四层缓存的保存：必须在编译【之后】，且 if: always() ----
+      #
+      # 【为什么不用 actions/cache@v4 一步到位】
+      #   它把保存放在 job 结束时,而【只有 job 成功才写缓存】。
+      #   于是编译失败 → 工具链那 40 分钟白编,下一轮还从零开始。
+      #   前几轮我们失败过好几次,这四层缓存【一次都没存下来】,
+      #   每轮都是冷构建 60~90 分钟 —— 这才是真正烧时间的地方。
+      #   (ccache 那层早就是这个写法,注释也写明了原因,只是没推广到另外四层。)
+      #
+      # 先存大的(staging_dir 约 1.5 GB),这样失败时大件也先落袋。
+      # 缓存上限 10 GB/仓库,超了按最后访问时间淘汰 ——
+      # 所以只存 staging_dir,不把整个 build_dir 塞进去。
+      - name: ①-存 dl/（源码包）
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: dl
+          key: ofc25-dl-${{ hashFiles('feeds.conf.default') }}
+
+      - name: ②-存 staging_dir + toolchain（下次省掉重建工具链 ~40 分钟）
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            staging_dir
+            toolchain
+          key: ofc25-stage-${{ runner.arch }}-${{ hashFiles('include/kernel-version.mk', 'feeds.conf.default', 'toolchain/gcc/Config.version') }}
+
+      - name: ③-存 build_dir/host（下次省掉重编宿主机工具 ~5-10 分钟）
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: build_dir/host
+          key: ofc25-host-${{ runner.arch }}-${{ hashFiles('include/kernel-version.mk', 'feeds.conf.default', 'toolchain/gcc/Config.version') }}
+
+      - name: ④-存内核编译目录（下次省掉重编内核 ~8-15 分钟）
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: build_dir/target-*/linux-mediatek_filogic
+          key: ofc25-kern-${{ runner.arch }}-${{ hashFiles('include/kernel-version.mk', 'target/linux/mediatek/Makefile', 'target/linux/mediatek/filogic/config-6.12') }}
 
       - name: 保存 ccache（即使编译失败也存）
         # 【提速关键】默认的 actions/cache 只在 job 成功时才写缓存，
