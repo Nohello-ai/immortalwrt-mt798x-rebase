@@ -70,5 +70,36 @@ esac
 rm -f "$STATE"
 
 # ── 参数校验
-printf '\n    %s\n' "usbmode：通过 $pass 项，失败 $fail 项"
 [ "$fail" -eq 0 ]
+
+# ── 进度状态(start/status 这套,界面靠它轮询避免 XHR 超时)──
+#    真机上踩过的坑:按钮同步等 auto 跑完(1~2 分钟),
+#    而 rpcd 的 fs.exec 约 30 秒就超时 → "Error: XHR request timed out"。
+progress_set running "正在探测"
+eq "进度:running"     "$(sed -n 's/^status=//p' "$PROGRESS")" "running"
+eq "进度:说明"        "$(sed -n 's/^text=//p' "$PROGRESS")" "正在探测"
+grep -q '^ts=' "$PROGRESS" && ok "进度里有时间戳" || bad "进度缺时间戳"
+
+progress_set done "完成"
+eq "进度:done"        "$(sed -n 's/^status=//p' "$PROGRESS")" "done"
+
+# 进度和状态要能一次请求都拿到(status 动作会拼上 state)
+state_set 5 wwan0 dhcp
+out="$(progress_show)"
+case "$out" in
+	*"status=done"*) ok "status 里带进度" ;;
+	*) bad "status 里没带进度" ;;
+esac
+case "$out" in
+	*"mode=5"*) ok "status 里带当前模式" ;;
+	*) bad "status 里没带当前模式" ;;
+esac
+
+# ── AT 口查找:必须能复用 modem 采样结果(真机上就是这里错了)──
+#    上一版按固定顺序猜,选中了 ttyUSB3(Modem/PPP 口),
+#    AT 发过去没人理 → "当前模式: 未知" + "切换命令被拒"。
+grep -q 'openfi-modem.json' "$SRC" && ok "AT 口会复用 modem 的采样结果" \
+	|| bad "AT 口没复用 modem 的采样结果"
+grep -q 'ttyUSB2' "$SRC" && ok "兜底顺序里有 ttyUSB2" || bad "兜底顺序里没有 ttyUSB2"
+
+printf '\n    %s\n' "usbmode：通过 $pass 项，失败 $fail 项"

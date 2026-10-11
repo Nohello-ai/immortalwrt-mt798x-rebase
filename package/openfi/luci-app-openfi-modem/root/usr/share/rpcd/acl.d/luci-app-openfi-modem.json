@@ -41,10 +41,19 @@
 				],
 				"/etc/openfi_usbmode.state": [
 					"read"
+				],
+				"/usr/sbin/openfi-usbmode start": [
+					"exec"
+				],
+				"/usr/sbin/openfi-usbmode status": [
+					"exec"
+				],
+				"/var/run/openfi-usbmode.progress": [
+					"read"
 				]
 			},
 			"uci": [
-				"openfi"
+				"openfi_modem"
 			]
 		},
 		"write": {
@@ -86,10 +95,19 @@
 				],
 				"/etc/openfi_usbmode.state": [
 					"read"
+				],
+				"/usr/sbin/openfi-usbmode start": [
+					"exec"
+				],
+				"/usr/sbin/openfi-usbmode status": [
+					"exec"
+				],
+				"/var/run/openfi-usbmode.progress": [
+					"read"
 				]
 			},
 			"uci": [
-				"openfi"
+				"openfi_modem"
 			]
 		}
 	}

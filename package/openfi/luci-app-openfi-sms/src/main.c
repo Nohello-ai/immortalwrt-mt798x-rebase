@@ -65,26 +65,127 @@ struct sms_cfg {
 	int  period;
 };
 
+/*
+ * 解析 AT 口。
+ *
+ * 【为什么不能直接用 uci 里的值】
+ *   openfi_modem 的默认配置写的是 'auto' —— 约定值,不是设备路径。
+ *   直接拿去 open() 会报 "打不开 auto"(真机上就是这么炸的)。
+ *
+ * 【为什么不去自己探测】
+ *   串口一次只能一个人用。openfi-modem 的采样进程每 15 秒就用一次,
+ *   我们再去逐个口试 AT,就是在跟它抢(虽然现在有 flock,但没必要)。
+ *   它已经把【真正在用的口】写在 /var/run/openfi-modem.json 里了,读就行。
+ *
+ * 顺序:
+ *   ① 显式配了 /dev/xxx     → 用它
+ *   ② 配置是空或 'auto'      → 读 modem 的采样结果
+ *   ③ 还是拿不到             → 自己按常见顺序探一遍(最后手段)
+ */
+static int resolve_at_port(char *out, size_t n, int baud, int timeout_ms)
+{
+	char buf[1024];
+	FILE *f;
+	size_t got;
+	char *hit, *end;
+
+	/* ② 复用 modem 采样进程的结果 */
+	f = fopen("/var/run/openfi-modem.json", "r");
+	if (f) {
+		got = fread(buf, 1, sizeof(buf) - 1, f);
+		fclose(f);
+		buf[got] = '\0';
+
+		/* 找 "at_port":"/dev/ttyUSB2" —— 这个文件是我们自己写的,
+		   格式固定,不值得为它引入一个 JSON 解析器 */
+		hit = strstr(buf, "\"at_port\":\"");
+		if (hit) {
+			hit += strlen("\"at_port\":\"");
+			end = strchr(hit, '"');
+			if (end && (size_t)(end - hit) < n && end > hit) {
+				memcpy(out, hit, (size_t)(end - hit));
+				out[end - hit] = '\0';
+				if (out[0] == '/')
+					return 0;
+			}
+		}
+	}
+
+	/* ③ 最后手段:按常见顺序探一遍(和 modem 包一样的思路) */
+	{
+		static const char *common[] = {
+			"/dev/ttyUSB2", "/dev/ttyUSB3", "/dev/ttyUSB1",
+			"/dev/ttyUSB0", "/dev/ttyACM0", "/dev/ttyACM1",
+		};
+		struct at_port tmp;
+		size_t i;
+		char extra[512];
+
+		for (i = 0; i < sizeof(common) / sizeof(common[0]); i++) {
+			if (at_open(&tmp, common[i], baud) == 0) {
+				struct at_resp r;
+
+				if (at_cmd(&tmp, "AT", timeout_ms, &r) == 0 &&
+				    r.result == AT_RES_OK) {
+					at_close(&tmp);
+					copy_str(out, n, common[i]);
+					return 0;
+				}
+				at_close(&tmp);
+			}
+		}
+		/* at_list_ports 能列出系统里实际存在的串口 */
+		if (at_list_ports(extra, sizeof(extra)) > 0) {
+			/* 形如 "ttyUSB0 ttyUSB2 ...",简化:只在里面找第一个能应答的 */
+			char *tok = strtok(extra, " \n");
+			while (tok) {
+				char path[128];
+
+				snprintf(path, sizeof(path), "/dev/%s", tok);
+				if (at_open(&tmp, path, baud) == 0) {
+					struct at_resp r;
+
+					if (at_cmd(&tmp, "AT", timeout_ms, &r) == 0 &&
+					    r.result == AT_RES_OK) {
+						at_close(&tmp);
+						copy_str(out, n, path);
+						return 0;
+					}
+					at_close(&tmp);
+				}
+				tok = strtok(NULL, " \n");
+			}
+		}
+	}
+	return -1;
+}
+
 static void cfg_load(struct sms_cfg *c)
 {
 	char *p = ouci_get("openfi_sms", "sms", "at_port");
 
 	memset(c, 0, sizeof(*c));
-	if (p && *p) {
+
+	c->baud = (int)ouci_get_int("openfi_sms", "sms", "baud", 115200);
+	c->timeout_ms = (int)ouci_get_int("openfi_sms", "sms", "timeout_ms", 2000);
+
+	/* ① 显式路径 */
+	if (p && *p && strcmp(p, "auto") != 0 && p[0] == '/') {
 		copy_str(c->at_port, sizeof(c->at_port), p);
 		free(p);
 	} else {
 		free(p);
-		/* 没配就跟模组包用同一个约定 */
-		p = ouci_get("openfi_modem", "modem", "at_port");
-		copy_str(c->at_port, sizeof(c->at_port), (p && *p) ? p : "/dev/ttyUSB2");
-		free(p);
+		/* ② / ③ 复用或探测 */
+		if (resolve_at_port(c->at_port, sizeof(c->at_port),
+				    c->baud, c->timeout_ms) != 0) {
+			/* 实在拿不到就先留空,open_port 会失败并打日志,
+			   比塞一个假路径进去更容易看出问题 */
+			c->at_port[0] = '\0';
+		}
 	}
 	p = ouci_get("openfi_sms", "sms", "sca");
 	copy_str(c->sca, sizeof(c->sca), p ? p : "");
 	free(p);
-	c->baud = (int)ouci_get_int("openfi_sms", "sms", "baud", 115200);
-	c->timeout_ms = (int)ouci_get_int("openfi_sms", "sms", "timeout_ms", 2000);
 	c->period = (int)ouci_get_int("openfi_sms", "sms", "period", 20);
 	if (c->period < 10)
 		c->period = 10;

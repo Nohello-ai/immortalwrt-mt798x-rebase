@@ -188,6 +188,43 @@ return view.extend({
 			});
 		}
 
+		/*
+		 * 探测要 1~2 分钟(每次切模式都要等 USB 重新枚举),
+		 * 而 rpcd 的 fs.exec 约 30 秒就超时 —— 上一版就是同步等,
+		 * 界面上直接报 "Error: XHR request timed out"。
+		 * 所以改成:start 点火(立刻返回)→ 轮询 status 看进度。
+		 */
+		var umTimer = null;
+
+		function umPoll() {
+			return fs.exec(UM_BIN, [ 'status' ]).then(function (r) {
+				var raw = (r.stdout || '').trim();
+				var parts = raw.split('---');
+				var head = umParse(parts[0] || '');
+				var st = umParse(parts[1] || '');
+
+				if (head.status === 'running') {
+					dom.content(umBody, E('p', { 'class': 'spinning' },
+						_('正在探测(约 1~2 分钟,期间网络会断十几秒)…')));
+					if (!umTimer)
+						umTimer = window.setInterval(function () { umPoll(); }, 3000);
+					return;
+				}
+
+				if (umTimer) {
+					window.clearInterval(umTimer);
+					umTimer = null;
+				}
+				if (head.status === 'done')
+					ui.addNotification(null, E('p', {}, _('探测完成')), 'info');
+				else if (head.status === 'failed')
+					ui.addNotification(null, E('p', {}, _('探测失败,保持原模式')), 'warning');
+
+				/* 结束(或本来就没在跑)→ 回到正常的详情显示 */
+				return umRefresh();
+			}).catch(function () { return umRefresh(); });
+		}
+
 		var umBox = E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, _('USB 数据模式')),
 			E('div', { 'class': 'cbi-section-descr' },
@@ -202,17 +239,15 @@ return view.extend({
 						if (!confirm(_('重新探测会切换模组的 USB 模式,USB 要重新枚举,'
 						             + '网络会断十几秒,最长可能要 1~2 分钟。\n\n继续吗?')))
 							return;
-						ui.showModal(_('正在探测'), [
-							E('p', { 'class': 'spinning' },
-							  _('正在逐个尝试 NCM / RNDIS 并验证连通,请稍候…'))
-						]);
-						return fs.exec(UM_BIN, [ 'auto' ]).then(function () {
-							ui.hideModal();
-							ui.addNotification(null, E('p', {}, _('探测完成')), 'info');
-							return umRefresh();
+						/* ★ 不在这里等下 —— 只点火,进度交给 umPoll 轮询。
+						   同步等一定会撞上 rpcd 的 30 秒超时(XHR request timed out)。 */
+						return fs.exec(UM_BIN, [ 'start' ]).then(function (r) {
+							ui.addNotification(null,
+								E('p', {}, r.stdout || _('已开始探测')), 'info');
+							return umPoll();
 						}).catch(function (e) {
-							ui.hideModal();
-							ui.addNotification(null, E('p', {}, _('探测失败:') + ' ' + e), 'error');
+							ui.addNotification(null,
+								E('p', {}, _('启动探测失败:') + ' ' + e), 'error');
 						});
 					})
 				}, _('重新探测')),
@@ -269,7 +304,7 @@ return view.extend({
 			atOut
 		]);
 
-		umRefresh();
+		umPoll();
 		poll.add(function () { return refresh(); }, POLL_SECS);
 
 		return E('div', {}, [
