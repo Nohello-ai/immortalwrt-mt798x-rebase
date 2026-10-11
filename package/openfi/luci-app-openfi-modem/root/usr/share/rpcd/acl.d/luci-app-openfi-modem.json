@@ -1,6 +1,6 @@
 {
 	"luci-app-openfi-modem": {
-		"description": "OpenFi 6C 5G 模组:读状态、查询、复位、AT 终端",
+		"description": "OpenFi 6C 5G 模组:读状态、查询、复位、AT 终端、USB 数据模式",
 		"read": {
 			"ubus": {
 				"file": [
@@ -25,6 +25,21 @@
 					"exec"
 				],
 				"/var/run/openfi-modem.json": [
+					"read"
+				],
+				"/usr/sbin/openfi-usbmode": [
+					"exec"
+				],
+				"/usr/sbin/openfi-usbmode show": [
+					"exec"
+				],
+				"/usr/sbin/openfi-usbmode auto": [
+					"exec"
+				],
+				"/usr/sbin/openfi-usbmode reset": [
+					"exec"
+				],
+				"/etc/openfi_usbmode.state": [
 					"read"
 				]
 			},
@@ -55,6 +70,21 @@
 					"exec"
 				],
 				"/var/run/openfi-modem.json": [
+					"read"
+				],
+				"/usr/sbin/openfi-usbmode": [
+					"exec"
+				],
+				"/usr/sbin/openfi-usbmode show": [
+					"exec"
+				],
+				"/usr/sbin/openfi-usbmode auto": [
+					"exec"
+				],
+				"/usr/sbin/openfi-usbmode reset": [
+					"exec"
+				],
+				"/etc/openfi_usbmode.state": [
 					"read"
 				]
 			},

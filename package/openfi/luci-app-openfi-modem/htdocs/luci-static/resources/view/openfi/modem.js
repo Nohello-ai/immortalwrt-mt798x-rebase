@@ -117,6 +117,120 @@ return view.extend({
 			}, _('硬复位'))
 		]);
 
+		/* ---- USB 数据模式 ---- */
+		/*
+		 * 5G 模组用哪种 USB 数据通道,决定 WAN 怎么出来:
+		 *   NCM(5)   wwan0  多包聚合,更快、更干净
+		 *   RNDIS(3) usb0   兼容性最好,是模组出厂默认
+		 * 开机由 /usr/sbin/openfi-usbmode 自动探测并记住结果,一般不用手动干预。
+		 * 这里的按钮只是给它一个入口。
+		 */
+		var UM_BIN = '/usr/sbin/openfi-usbmode';
+		/* 只列可能出现在 state 里的;完整映射在脚本的 mode_name() 里 */
+		var UM_MODE = { 0: 'RMNET', 1: 'ECM', 2: 'MBIM', 3: 'RNDIS', 4: 'QMI', 5: 'NCM' };
+
+		/* state 文件是 key=value 一行一条 */
+		function umParse(s) {
+			var o = {};
+			(s || '').split('\n').forEach(function (l) {
+				var i = l.indexOf('=');
+				if (i > 0)
+					o[l.slice(0, i)] = l.slice(i + 1);
+			});
+			return o;
+		}
+
+		function umFmtTime(t) {
+			t = parseInt(t, 10);
+			if (!t)
+				return '-';
+			var d = new Date(t * 1000);
+			function p2(n) { return (n < 10 ? '0' : '') + n; }
+			return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' '
+			     + p2(d.getHours()) + ':' + p2(d.getMinutes());
+		}
+
+		var umBody = E('div', {}, E('p', { 'class': 'spinning' }, _('读取中…')));
+
+		function umRefresh() {
+			return fs.exec(UM_BIN, [ 'show' ]).then(function (r) {
+				var raw = (r.stdout || '').trim();
+				if (!raw || raw.indexOf('=') < 0) {
+					/* 脚本在没探测过时输出的是中文句子,不是 key=value */
+					dom.content(umBody, E('p', {}, _('还没探测过。重启一次,或点下面的「重新探测」。')));
+					return;
+				}
+				var st = umParse(raw);
+				var failed = (st.failed || '').trim();
+
+				var rows = [
+					[ _('当前模式'), (UM_MODE[st.mode] || _('未知')) + ' (' + (st.mode || '?') + ')' ],
+					[ _('网卡'), st.dev || '-' ],
+					[ _('协议'), st.proto || '-' ],
+					[ _('探测时间'), umFmtTime(st.ts) ],
+					[ _('失败记忆'), failed
+						? failed.split(/\s+/).map(function (m) {
+							return UM_MODE[m] || m;
+						  }).join('、') + _('(这些不会再试,7 天后自动清空)')
+						: _('无') ]
+				];
+
+				var tbl = E('table', { 'class': 'table' }, rows.map(function (kv) {
+					return E('tr', { 'class': 'tr' }, [
+						E('td', { 'class': 'td left', 'style': 'width:34%' }, kv[0]),
+						E('td', { 'class': 'td left' }, kv[1])
+					]);
+				}));
+
+				dom.content(umBody, tbl);
+			}).catch(function () {
+				dom.content(umBody, E('p', {}, _('读取失败(可能没装 openfi-usbmode)。')));
+			});
+		}
+
+		var umBox = E('div', { 'class': 'cbi-section' }, [
+			E('h3', {}, _('USB 数据模式')),
+			E('div', { 'class': 'cbi-section-descr' },
+				_('5G 模组用哪种 USB 数据通道,决定 WAN 怎么出来。'
+				+ 'NCM 更快更干净,RNDIS 兼容性最好(模组出厂默认)。'
+				+ '开机自动探测并记住结果,一般不需要手动干预。')),
+			umBody,
+			E('div', { 'class': 'cbi-page-actions' }, [
+				E('button', {
+					'class': 'btn cbi-button cbi-button-apply',
+					'click': ui.createHandlerFn(this, function () {
+						if (!confirm(_('重新探测会切换模组的 USB 模式,USB 要重新枚举,'
+						             + '网络会断十几秒,最长可能要 1~2 分钟。\n\n继续吗?')))
+							return;
+						ui.showModal(_('正在探测'), [
+							E('p', { 'class': 'spinning' },
+							  _('正在逐个尝试 NCM / RNDIS 并验证连通,请稍候…'))
+						]);
+						return fs.exec(UM_BIN, [ 'auto' ]).then(function () {
+							ui.hideModal();
+							ui.addNotification(null, E('p', {}, _('探测完成')), 'info');
+							return umRefresh();
+						}).catch(function (e) {
+							ui.hideModal();
+							ui.addNotification(null, E('p', {}, _('探测失败:') + ' ' + e), 'error');
+						});
+					})
+				}, _('重新探测')),
+				' ',
+				E('button', {
+					'class': 'btn cbi-button cbi-button-reset',
+					'click': ui.createHandlerFn(this, function () {
+						if (!confirm(_('清除探测记录后,下次开机会重新试一遍(可能要 1~2 分钟)。\n\n继续吗?')))
+							return;
+						return fs.exec(UM_BIN, [ 'reset' ]).then(function () {
+							ui.addNotification(null, E('p', {}, _('已清除,下次开机重新探测')), 'info');
+							return umRefresh();
+						});
+					})
+				}, _('清除记录'))
+			])
+		]);
+
 		/* ---- AT 终端 ---- */
 		var atOut = E('pre', {
 			'style': 'max-height:16em;overflow:auto;background:rgba(127,127,127,.12);'
@@ -155,12 +269,14 @@ return view.extend({
 			atOut
 		]);
 
+		umRefresh();
 		poll.add(function () { return refresh(); }, POLL_SECS);
 
 		return E('div', {}, [
 			E('h2', {}, _('5G 模组')),
 			statusBox,
 			actions,
+			umBox,
 			E('h2', {}, _('调试')),
 			atBox
 		]);
