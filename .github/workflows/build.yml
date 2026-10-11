@@ -371,14 +371,24 @@ jobs:
       # 缓存上限 10 GB/仓库,超了按最后访问时间淘汰 ——
       # 所以只存 staging_dir,不把整个 build_dir 塞进去。
       - name: ①-存 dl/（源码包）
-        if: always()
+        # 【不能写 always()】always() 把"被取消"也算进去 ——
+        # 取消时编译可能跑了一半,staging_dir 里会留下 .built 标记,
+        # 下次构建以为组件已经编好,拿到残缺的工具链,报一堆莫名其妙的错。
+        #   success() || failure() = 只要不是"被取消"就跑:
+        #   编译失败照样存(这是我们要的),取消则不存。
+        if: success() || failure()
         uses: actions/cache/save@v4
         with:
           path: dl
           key: ofc25-dl-${{ hashFiles('feeds.conf.default') }}
 
       - name: ②-存 staging_dir + toolchain（下次省掉重建工具链 ~40 分钟）
-        if: always()
+        # 【不能写 always()】always() 把"被取消"也算进去 ——
+        # 取消时编译可能跑了一半,staging_dir 里会留下 .built 标记,
+        # 下次构建以为组件已经编好,拿到残缺的工具链,报一堆莫名其妙的错。
+        #   success() || failure() = 只要不是"被取消"就跑:
+        #   编译失败照样存(这是我们要的),取消则不存。
+        if: success() || failure()
         uses: actions/cache/save@v4
         with:
           path: |
@@ -387,14 +397,24 @@ jobs:
           key: ofc25-stage-${{ runner.arch }}-${{ hashFiles('include/kernel-version.mk', 'feeds.conf.default', 'toolchain/gcc/Config.version') }}
 
       - name: ③-存 build_dir/host（下次省掉重编宿主机工具 ~5-10 分钟）
-        if: always()
+        # 【不能写 always()】always() 把"被取消"也算进去 ——
+        # 取消时编译可能跑了一半,staging_dir 里会留下 .built 标记,
+        # 下次构建以为组件已经编好,拿到残缺的工具链,报一堆莫名其妙的错。
+        #   success() || failure() = 只要不是"被取消"就跑:
+        #   编译失败照样存(这是我们要的),取消则不存。
+        if: success() || failure()
         uses: actions/cache/save@v4
         with:
           path: build_dir/host
           key: ofc25-host-${{ runner.arch }}-${{ hashFiles('include/kernel-version.mk', 'feeds.conf.default', 'toolchain/gcc/Config.version') }}
 
       - name: ④-存内核编译目录（下次省掉重编内核 ~8-15 分钟）
-        if: always()
+        # 【不能写 always()】always() 把"被取消"也算进去 ——
+        # 取消时编译可能跑了一半,staging_dir 里会留下 .built 标记,
+        # 下次构建以为组件已经编好,拿到残缺的工具链,报一堆莫名其妙的错。
+        #   success() || failure() = 只要不是"被取消"就跑:
+        #   编译失败照样存(这是我们要的),取消则不存。
+        if: success() || failure()
         uses: actions/cache/save@v4
         with:
           path: build_dir/target-*/linux-mediatek_filogic
@@ -404,7 +424,12 @@ jobs:
         # 【提速关键】默认的 actions/cache 只在 job 成功时才写缓存，
         # 于是编译失败那一轮编的东西全白编了（而失败往往就发生在最后几个包）。
         # 用 restore/save 分开 + if: always()，失败的轮次也能把 ccache 留给下次。
-        if: always()
+        # 【不能写 always()】always() 把"被取消"也算进去 ——
+        # 取消时编译可能跑了一半,staging_dir 里会留下 .built 标记,
+        # 下次构建以为组件已经编好,拿到残缺的工具链,报一堆莫名其妙的错。
+        #   success() || failure() = 只要不是"被取消"就跑:
+        #   编译失败照样存(这是我们要的),取消则不存。
+        if: success() || failure()
         uses: actions/cache/save@v4
         with:
           path: .ccache
