@@ -28,6 +28,22 @@ if ! command -v musl-gcc >/dev/null 2>&1; then
 	exit 0
 fi
 
+# ── 定位包目录 ──────────────────────────────────────────────
+# 支持两种布局,和 run-sanitizers.sh 一样:
+#   开发目录: openfi-lib/src
+#   固件树:   package/openfi/openfi-lib/src
+_d=$(cd "$(dirname "$0")" && pwd)
+P=.
+while [ "$_d" != "/" ]; do
+	if [ -d "$_d/openfi-lib/src" ]; then P="$_d"; break; fi
+	if [ -d "$_d/package/openfi/openfi-lib/src" ]; then P="$_d/package/openfi"; break; fi
+	_d=$(dirname "$_d")
+done
+if [ ! -d "$P/openfi-lib/src" ]; then
+	echo "  找不到包目录(既不是开发目录也不是固件树)"; exit 1
+fi
+cd "$P" || exit 1
+
 L=openfi-lib/src
 M=luci-app-openfi-modem/src
 S=luci-app-openfi-sms/src
@@ -39,7 +55,8 @@ ok=0; bad=0
 
 echo "  ① 建静态库"
 mkdir -p "$WORK/lib"
-cp $L/*.c $L/*.h "$WORK/lib/" 2>/dev/null
+cp $L/*.c "$WORK/lib/" || { echo "     ❌ 复制源码失败($L)"; exit 1; }
+for h in $L/*.h; do [ -f "$h" ] && cp "$h" "$WORK/lib/"; done
 (
 	cd "$WORK/lib" || exit 1
 	for f in *.c; do
@@ -55,7 +72,11 @@ build_one() {
 	pkg="$1"; bin="$2"; shift 2
 	d="$WORK/$pkg"
 	mkdir -p "$d"
-	cp "$pkg"/src/*.c "$pkg"/src/*.h "$d/" 2>/dev/null
+	# 有的包没有自己的头文件(fan 就只有 .c),所以 .c 和 .h 分开拷
+	cp "$pkg"/src/*.c "$d/" || { echo "     ❌ 复制源码失败($pkg)"; bad=$((bad+1)); return; }
+	for h in "$pkg"/src/*.h; do
+		[ -f "$h" ] && cp "$h" "$d/"
+	done
 	if ( cd "$d" && musl-gcc $CF "$@" -I"$WORK/lib" -o "$bin" ./*.c \
 			-L"$WORK/lib" -lopenfi ) 2>"$WORK/err"; then
 		printf "     ✅ %-14s %s 字节\n" "$bin" "$(stat -c%s "$d/$bin" 2>/dev/null)"
