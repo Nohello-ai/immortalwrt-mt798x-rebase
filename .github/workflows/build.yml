@@ -109,6 +109,17 @@ jobs:
             echo "::warning::musl 编译检查没过 —— 目标机上很可能编不过,看上面的输出"
           fi
 
+          # files/ 覆盖目录里的脚本:语法 + 纯逻辑回归。
+          # usbmode 管的是 5G 模组的 USB 数据模式(也就是 WAN 怎么出来),
+          # 坏了的表现是"模组认到了但上不了网",上机才发现,所以在这里先拦。
+          for f in files/usr/sbin/openfi-usbmode files/etc/init.d/openfi-usbmode; do
+            [ -e "$f" ] || { echo "::error::缺少 $f"; fail=1; continue; }
+            sh -n "$f" || { echo "::error::$f 语法错误"; fail=1; }
+            [ "$(stat -c '%a' "$f")" = "755" ] \
+              || { echo "::error::$f 权限不是 755(固件里会执行不了)"; fail=1; }
+          done
+          [ -x tests/test-usbmode.sh ] && { sh tests/test-usbmode.sh || fail=1; }
+
           chk feeds.conf.default
 
           echo "----- defconfig 里选的是我们的设备吗 -----"

@@ -13,7 +13,27 @@
 /logs
 /feeds
 /feeds.conf
-/files
+# 上游把 /files 当"用户私人覆盖目录"排除掉。
+# 但【我们的板级文件就在 files/ 里】—— openfi-usbmode 管的是 5G 模组
+# 的 USB 数据模式,也就是 WAN 怎么出来。整目录排除会让 `git add -A`
+# 【静默跳过】它:本地测试全过,CI 里却因为文件不存在而失败。
+# (6.6 那棵树踩过这个坑,当时的补救是 git add -f,规则本身没动。)
+#
+# 这里改成:只排除我们没显式放开的那些路径。
+/files/*
+!/files/usr/
+/files/usr/*
+!/files/usr/sbin/
+/files/usr/sbin/*
+!/files/usr/sbin/openfi-usbmode
+!/files/etc/
+/files/etc/*
+!/files/etc/init.d/
+/files/etc/init.d/*
+!/files/etc/init.d/openfi-usbmode
+!/files/etc/config/
+/files/etc/config/*
+!/files/etc/config/openfi_usbmode
 /target/linux/feeds
 /overlay
 /package/feeds
