@@ -17,6 +17,7 @@
 #   没装 musl 工具链时会明确告诉你装哪个包,不算失败。
 #
 set -u
+cd "$(dirname "$0")/.." || exit 1
 
 if ! command -v musl-gcc >/dev/null 2>&1; then
 	echo "  跳过:没装 musl 工具链"
@@ -31,16 +32,7 @@ fi
 # 支持两种布局,和 run-sanitizers.sh 一样:
 #   开发目录: openfi-lib/src
 #   固件树:   package/openfi/openfi-lib/src
-#
-# 【不要再写 `cd "$(dirname "$0")/.."`】
-#   踩过:这个脚本本来在 scripts/,后来挪到 scripts/openfi/,
-#   那句 `..` 就少退了一级 —— 于是先 cd 到了 scripts/,
-#   接着再 cd 相对路径 "scripts/openfi" 直接失败:
-#       cd: can't cd to scripts/openfi
-#   改成:从脚本自身的【绝对】目录出发向上找,不依赖调用时的 cwd,
-#   也不依赖脚本埋在几层目录里。
-_sd=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || _sd=$(pwd)
-_d="$_sd"
+_d=$(cd "$(dirname "$0")" && pwd)
 P=.
 while [ "$_d" != "/" ]; do
 	if [ -d "$_d/openfi-lib/src" ]; then P="$_d"; break; fi

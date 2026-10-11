@@ -518,8 +518,14 @@ void md_fill_datalink(struct md_state *s)
 		}
 	}
 
-	/* DNS:resolv.conf 里第一个 nameserver */
-	f = fopen("/etc/resolv.conf", "r");
+	/* DNS:优先上网卡真正用的那份。
+	 *
+	 * /etc/resolv.conf 在 OpenWrt 上指向 127.0.0.1(本机 dnsmasq),
+	 * 显示出来没意义。上游那份在 /tmp/resolv.conf.d/resolv.conf.auto,
+	 * 拿不到再退回 /etc/resolv.conf。 */
+	f = fopen("/tmp/resolv.conf.d/resolv.conf.auto", "r");
+	if (!f)
+		f = fopen("/etc/resolv.conf", "r");
 	if (f) {
 		char line[128];
 
