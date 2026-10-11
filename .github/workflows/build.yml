@@ -93,6 +93,17 @@ jobs:
           chk defconfig/openfi6c.config
           chk target/linux/mediatek/dts/mt7981b-openfi-6c.dts
           chk target/linux/mediatek/image/filogic.mk
+          # ★ 用 musl 编一遍我们的源码。
+          #   glibc 会把 <sys/select.h> 这类头通过别的头间接带进来,musl 不会 ——
+          #   同一份代码本地编得过、目标机上就是硬错误。踩过一次:
+          #   短信包用了 select()/fd_set 却没包含 <sys/select.h>,
+          #   CI 编到第 17 步(67 分钟后)才报 unknown type name 'fd_set'。
+          #   这里 5 秒就能拦住,不用白等一个多小时。
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get install -y -qq musl-tools >/dev/null 2>&1 || true
+          fi
+          sh scripts/openfi/check-musl.sh || fail=1
+
           chk feeds.conf.default
 
           echo "----- defconfig 里选的是我们的设备吗 -----"

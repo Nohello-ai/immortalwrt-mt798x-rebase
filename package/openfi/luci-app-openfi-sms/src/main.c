@@ -20,6 +20,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <signal.h>
+#include <sys/select.h>	/* musl 要求显式包含,glibc 会间接带进来 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

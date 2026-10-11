@@ -11,7 +11,7 @@
 #
 set -e
 
-TREE=${1:-/root/1/openfi-25.12}
+TREE=${1:-/root/1/upstream-rebase}
 [ -d "$TREE/package" ] || { echo "找不到固件树: $TREE"; exit 1; }
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -41,8 +41,12 @@ done
 # 不然仓库里的包只有源码没有验证手段,别人拿到手没法自测。
 DEV="$TREE/scripts/openfi"
 mkdir -p "$DEV"
-for f in run-sanitizers.sh run-fuzz.sh run-mutation.sh sync-to-tree.sh; do
-	[ -f "$SRC/scripts/$f" ] && cp -a "$SRC/scripts/$f" "$DEV/" && echo "  ✅ scripts/openfi/$f"
+# 用通配而不是写死清单 —— 否则以后新加的脚本会忘了同步,
+# 而 CI 里引用了不存在的脚本会直接失败(或者更糟:静默不检查)。
+for f in "$SRC"/scripts/*.sh; do
+	[ -f "$f" ] || continue
+	b=$(basename "$f")
+	cp -a "$f" "$DEV/" && echo "  ✅ scripts/openfi/$b"
 done
 
 echo
