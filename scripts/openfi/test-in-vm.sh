@@ -91,9 +91,9 @@ fi
 echo
 echo "═══ ③ VM 上验证配置脚本(UCI 默认值)═══"
 cat "$FAN/root/etc/uci-defaults/40_luci-app-openfi-fan" | $SSH "cat > /tmp/ud.sh"
-# 在 VM 上真跑一遍:它会写 /etc/config/openfi
+# 在 VM 上真跑一遍:它会写 /etc/config/openfi_fan
 if $SSH "
-	rm -f /etc/config/openfi
+	rm -f /etc/config/openfi_fan
 	sh /tmp/ud.sh
 	echo '  生成后的配置:'
 	uci show openfi 2>&1 | sed 's/^/    /'

@@ -29,7 +29,7 @@
 				]
 			},
 			"uci": [
-				"openfi"
+				"openfi_fan"
 			]
 		},
 		"write": {
@@ -59,7 +59,7 @@
 				]
 			},
 			"uci": [
-				"openfi"
+				"openfi_fan"
 			]
 		}
 	}

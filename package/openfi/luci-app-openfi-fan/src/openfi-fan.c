@@ -70,36 +70,36 @@ static void cfg_load(struct fan_run_cfg *rc)
 	int min_speed;
 
 	/* UCI 里没有就用默认 —— 不能因为配置缺项就不转风扇 */
-	min_speed = (int)ouci_get_int("openfi", "fan", "min_speed", 10);
+	min_speed = (int)ouci_get_int("openfi_fan", "fan", "min_speed", 10);
 	fan_cfg_default(&rc->curve, min_speed);
 
-	rc->curve.t1 = (int)ouci_get_int("openfi", "fan", "temp1", rc->curve.t1);
-	rc->curve.t2 = (int)ouci_get_int("openfi", "fan", "temp2", rc->curve.t2);
-	rc->curve.t3 = (int)ouci_get_int("openfi", "fan", "temp3", rc->curve.t3);
-	rc->curve.t4 = (int)ouci_get_int("openfi", "fan", "temp4", rc->curve.t4);
-	rc->curve.s1 = (int)ouci_get_int("openfi", "fan", "speed1", rc->curve.s1);
-	rc->curve.s2 = (int)ouci_get_int("openfi", "fan", "speed2", rc->curve.s2);
-	rc->curve.s3 = (int)ouci_get_int("openfi", "fan", "speed3", rc->curve.s3);
-	rc->curve.s4 = (int)ouci_get_int("openfi", "fan", "speed4", rc->curve.s4);
+	rc->curve.t1 = (int)ouci_get_int("openfi_fan", "fan", "temp1", rc->curve.t1);
+	rc->curve.t2 = (int)ouci_get_int("openfi_fan", "fan", "temp2", rc->curve.t2);
+	rc->curve.t3 = (int)ouci_get_int("openfi_fan", "fan", "temp3", rc->curve.t3);
+	rc->curve.t4 = (int)ouci_get_int("openfi_fan", "fan", "temp4", rc->curve.t4);
+	rc->curve.s1 = (int)ouci_get_int("openfi_fan", "fan", "speed1", rc->curve.s1);
+	rc->curve.s2 = (int)ouci_get_int("openfi_fan", "fan", "speed2", rc->curve.s2);
+	rc->curve.s3 = (int)ouci_get_int("openfi_fan", "fan", "speed3", rc->curve.s3);
+	rc->curve.s4 = (int)ouci_get_int("openfi_fan", "fan", "speed4", rc->curve.s4);
 	rc->curve.emergency_temp =
-		(int)ouci_get_int("openfi", "fan", "emergency_temp",
+		(int)ouci_get_int("openfi_fan", "fan", "emergency_temp",
 				  rc->curve.emergency_temp);
 
-	rc->period = (int)ouci_get_int("openfi", "fan", "period", 5);
+	rc->period = (int)ouci_get_int("openfi_fan", "fan", "period", 5);
 	if (rc->period < 1)
 		rc->period = 1;
 	if (rc->period > 60)
 		rc->period = 60;
 
 	rc->silent_max_temp =
-		(int)ouci_get_int("openfi", "fan", "silent_max_temp", 75);
+		(int)ouci_get_int("openfi_fan", "fan", "silent_max_temp", 75);
 	/* 开关哪一档算静默:默认高电平档(与原厂 "high: led off" 的注释一致) */
-	rc->silent_when_hi = ouci_get_bool("openfi", "fan", "silent_when_hi", 1);
+	rc->silent_when_hi = ouci_get_bool("openfi_fan", "fan", "silent_when_hi", 1);
 
-	const char *chip = ouci_get_def("openfi", "fan", "pwm_chip", PWM_CHIP_DEFAULT);
+	const char *chip = ouci_get_def("openfi_fan", "fan", "pwm_chip", PWM_CHIP_DEFAULT);
 
 	snprintf(rc->pwm_chip, sizeof(rc->pwm_chip), "%s", chip);
-	rc->period_ns = (int)ouci_get_int("openfi", "fan", "period_ns",
+	rc->period_ns = (int)ouci_get_int("openfi_fan", "fan", "period_ns",
 					  PERIOD_NS_DEFAULT);
 	/* 两路是板级事实,不做成配置项 —— 配错了风扇就不转 */
 	rc->channels[0] = 0;
@@ -406,11 +406,11 @@ int main(int argc, char **argv)
 		 * 所以先读进临时缓冲,再赋值。
 		 */
 		char tmp[sizeof(tc.wifi_iface)];
-		const char *p = ouci_get_def("openfi", "fan", "wifi_iface", "ra0");
+		const char *p = ouci_get_def("openfi_fan", "fan", "wifi_iface", "ra0");
 
 		snprintf(tmp, sizeof(tmp), "%s", p);
 		memcpy(tc.wifi_iface, tmp, sizeof(tmp));
-		tc.wifi_enabled = ouci_get_bool("openfi", "fan", "wifi_temp", 1);
+		tc.wifi_enabled = ouci_get_bool("openfi_fan", "fan", "wifi_temp", 1);
 	}
 
 	/* --status:只把上次写的状态文件读出来打印,不读温度、不碰 PWM ——
@@ -458,7 +458,7 @@ int main(int argc, char **argv)
 		 * 回到温度曲线。清掉 manual_speed 并把 mode 改回 auto ——
 		 * 只改 mode 也行,但把速度一并清掉,免得界面上的旧值造成误解。
 		 */
-		if (ouci_set("openfi", "fan", "mode", "auto") != 0)
+		if (ouci_set("openfi_fan", "fan", "mode", "auto") != 0)
 			return oj_fail("写配置失败");
 		olog_info("已回到温度曲线");
 		return 0;
@@ -487,8 +487,8 @@ int main(int argc, char **argv)
 			return oj_fail("PWM 写入失败");
 
 		snprintf(buf, sizeof(buf), "%d", opt_speed);
-		if (ouci_set("openfi", "fan", "mode", "manual") != 0 ||
-		    ouci_set("openfi", "fan", "manual_speed", buf) != 0)
+		if (ouci_set("openfi_fan", "fan", "mode", "manual") != 0 ||
+		    ouci_set("openfi_fan", "fan", "manual_speed", buf) != 0)
 			olog_warn("转速已生效,但写配置失败 —— 重启后会回到温度曲线");
 		else
 			olog_info("已固定转速 %d%%(写进配置,改回请用 --speed auto)", opt_speed);

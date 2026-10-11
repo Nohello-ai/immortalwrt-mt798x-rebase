@@ -168,7 +168,7 @@ function buildChart(st) {
 return view.extend({
 	load: function () {
 		return Promise.all([
-			uci.load('openfi'),
+			uci.load('openfi_fan'),
 			/* 首次读不到不算错:守护进程可能还没写出状态文件 */
 			fs.exec(BIN, ['--status']).catch(function () { return { stdout: '' }; })
 		]);
