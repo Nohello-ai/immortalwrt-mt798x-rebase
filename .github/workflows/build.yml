@@ -162,6 +162,33 @@ jobs:
           #   这个脚本机器核对:JS 的 uci 引用 / ACL 的 uci 权限 / uci-defaults
           #   建的配置文件 / C 代码的包名,四者必须指向同一个配置。
           [ -x scripts/openfi/check-consistency.sh ] && { sh scripts/openfi/check-consistency.sh || fail=1; }
+          # ★ apk 换源脚本:真跑一遍(造个假源列表,看它换对没有)。
+          #   这个脚本首次开机执行,写坏了设备就没法装包,所以要测。
+          if [ -f files/etc/uci-defaults/95-openfi-apk-mirror ]; then
+            T=$(mktemp -d)
+            cat > "$T/distfeeds.list" <<'EOFLIST'
+          https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/aarch64_cortex-a53/base
+          https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/packages/aarch64_cortex-a53/video
+          https://downloads.immortalwrt.org/releases/25.12-SNAPSHOT/targets/mediatek/filogic/packages
+          EOFLIST
+            OPENFI_APK_DIR="$T" sh files/etc/uci-defaults/95-openfi-apk-mirror >/dev/null 2>&1
+            grep -q 'mirror.nju.edu.cn' "$T/distfeeds.list" \
+              || { echo '::error::换源脚本没有把官方域名换成南大'; fail=1; }
+            grep -q '^https://downloads.immortalwrt.org' "$T/distfeeds.list" \
+              && { echo '::error::换源后还残留官方域名'; fail=1; } || true
+            grep -q '^#.*video' "$T/distfeeds.list" \
+              || { echo '::error::会 404 的 video 源没被注释掉'; fail=1; }
+            grep -q 'targets/mediatek/filogic' "$T/distfeeds.list" \
+              || { echo '::error::板级源被误删了'; fail=1; }
+            [ -f "$T/distfeeds.list.orig" ] \
+              || { echo '::error::没有备份原文件'; fail=1; }
+            # 幂等:再跑一次不应该有变化
+            BEFORE=$(cat "$T/distfeeds.list")
+            OPENFI_APK_DIR="$T" sh files/etc/uci-defaults/95-openfi-apk-mirror >/dev/null 2>&1
+            [ "$BEFORE" = "$(cat "$T/distfeeds.list")" ] \
+              || { echo '::error::换源脚本不是幂等的'; fail=1; }
+            rm -rf "$T"
+          fi
 
           chk feeds.conf.default
 
