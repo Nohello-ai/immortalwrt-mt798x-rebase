@@ -365,17 +365,27 @@
  * (compatible 里带上了 "mediatek,wbsys"),
  * 所以【没有 &wbsys 这个标签】,闭源 mt_wifi 驱动认的就是这个 &wifi 节点。
  *
- * 这里只写 status,不加任何 eeprom 属性 —— 跟本目录的 cmcc-rax3000m 一样
- * (那是本目录最简的写法),也和原厂 DTB 一致(原厂 wbsys 节点里没有 eeprom 属性)。
- * 校准数据由驱动自己去找(MTK feeds 里有 universal-eeprom-read-write-backend)。
+ * ★ 关于 eeprom 属性:下面【有】写 mediatek,mtd-eeprom。
+ *   (这段注释以前写的是"只写 status,不加 eeprom 属性",那是更早的决定;
+ *    后来改成了显式指定,注释没跟着改,两处长期矛盾 ——
+ *    照旧注释去"修正"代码会把 WiFi 弄坏,所以这次对准了。)
  *
- * ⚠️ 万一刷上去发现 WiFi 起不来或功率/信道异常,再按这两种写法之一补上:
- *        nvmem-cells = <&eeprom_factory_0>;
- *        nvmem-cell-names = "eeprom";
- *    (airpi-ap3000m / abt-asr3000 / comfast 是这样写的,需要自己定义那个 cell)
- *    或者
+ *   两种写法本目录都有先例:
+ *        nvmem-cells = <&eeprom_factory_0>;  + nvmem-cell-names = "eeprom";
+ *            airpi-ap3000m / abt-asr3000 / comfast 这样写,
+ *            需要在 Factory 分区里自己定义那个 cell(只能给出固定长度的子集)
  *        mediatek,mtd-eeprom = <&factory 0>;
- *    (glinet-gl-mt3000 是这样写的,直接用整个 Factory 分区)
+ *            glinet-gl-mt3000 这样写,直接读整个 Factory 分区
+ *
+ *   本板选后者,理由:
+ *     · 闭源驱动要的 EEPROM 按 l1profile.dat 是 0x5000 字节
+ *       (INDEX0_EEPROM_offset=0x0 / INDEX0_EEPROM_size=0x5000),
+ *       而上游 DTS 那种 nvmem cell 写法给的是 0x1000 —— 长度对不上。
+ *       走 mtd-eeprom 是"把整个分区交给驱动",由驱动自己截取需要的长度。
+ *     · 6.6 那棵树就是这么写的,原厂行为已知可用。
+ *     · 驱动本身也能兜底去裸 MTD 找 Factory/factory 分区,
+ *       但 MTK 官方参考板(mt7981-rfb overlay)也是显式写的 ——
+ *       有兜底不代表该依赖兜底。
  */
 &wifi {
 	/*

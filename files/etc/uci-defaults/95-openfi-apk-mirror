@@ -1,0 +1,114 @@
+#!/bin/sh
+#
+# 首次启动:把 apk 软件源从官方换成南大镜像
+#
+# ── 为什么要换 ──────────────────────────────────────────────────────────
+#   实测同一个索引文件(带 curl 的 speed_download):
+#
+#       downloads.immortalwrt.org          约  76 KB/s
+#       mirror.nju.edu.cn/immortalwrt      约 296 KB/s
+#
+#   约 4 倍差距。装包时能省不少时间。
+#
+# ── 为什么可以这么简单地换 ──────────────────────────────────────────────
+#   两边的目录结构和索引文件名【完全一致】,已逐个核对过:
+#
+#       <根>/releases/25.12-SNAPSHOT/packages/aarch64_cortex-a53/{base,luci,packages,routing,telephony}/
+#           索引文件名是小写的 packages.adb
+#       <根>/releases/25.12-SNAPSHOT/targets/mediatek/filogic/packages/
+#
+#   官方根 = https://downloads.immortalwrt.org
+#   南大根 = https://mirror.nju.edu.cn/immortalwrt
+#
+#   所以只需要替换域名,路径一个字都不用动。
+#
+# ── 注意 ────────────────────────────────────────────────────────────────
+#   换源只影响"到哪里下载包",【不改变包版本】。
+#   本固件是自己编的,版本号和镜像上的快照不一定对得上 ——
+#   所以:
+#       · 可以   apk add <包名>
+#       · 不要   apk upgrade
+#   混用会把 base-files、内核这种核心包换成镜像上的版本,和本固件不匹配。
+#
+# ── 怎么改回来 ──────────────────────────────────────────────────────────
+#   脚本会把原文件备份成 distfeeds.list.orig,恢复即可:
+#       mv /etc/apk/repositories.d/distfeeds.list.orig \
+#          /etc/apk/repositories.d/distfeeds.list
+#   或者删掉本脚本再次刷机。
+#
+set -u
+
+OFFICIAL="https://downloads.immortalwrt.org"
+MIRROR="https://mirror.nju.edu.cn/immortalwrt"
+
+# 允许测试时指到别处(生产上是默认值)
+DIR=${OPENFI_APK_DIR:-/etc/apk/repositories.d}
+changed=0
+
+for f in "$DIR"/distfeeds.list "$DIR"/customfeeds.list; do
+	[ -f "$f" ] || continue
+
+	# 已经是南大了就跳过(幂等 —— 重刷/重启都安全)
+	if grep -q "mirror\.nju\.edu\.cn" "$f" 2>/dev/null; then
+		echo "openfi-apk-mirror: $(basename "$f") 已经是南大镜像,跳过"
+		continue
+	fi
+
+	# 不认识这个文件就不动它 —— 宁可保持原样也不要写坏
+	if ! grep -q "downloads\.immortalwrt\.org" "$f" 2>/dev/null; then
+		echo "openfi-apk-mirror: $(basename "$f") 里没有官方域名,不动它"
+		continue
+	fi
+
+	# 备份一次就够,不要覆盖更早的备份
+	[ -f "$f.orig" ] || cp -a "$f" "$f.orig"
+
+	# ★ 只换域名,路径保持原样
+	sed -i "s|$OFFICIAL|$MIRROR|g" "$f"
+	changed=$((changed + 1))
+	echo "openfi-apk-mirror: $(basename "$f") 已换成南大镜像"
+done
+
+# ── 去掉会 404 的源 ────────────────────────────────────────────────────
+# ★ 这个是在真机上踩出来的:
+#     video 源在【官方和南大两边都 404】——
+#     官方 releases/25.12-SNAPSHOT/packages/aarch64_cortex-a53/video/packages.adb
+#     不存在,于是每次 apk update 都会报
+#         wget: exited with error 8
+#         video/packages.adb: unexpected end of file
+#     然后整个 update 失败。
+#
+#     实际可用的 feed 只有这五个:base luci packages routing telephony
+#     另外还有 targets/mediatek/filogic 那一条(板级包)。
+#
+#   做法:把不认识的 feed 注释掉而不是删掉 —— 保留痕迹,方便以后对照。
+KNOWN="base luci packages routing telephony targets"
+for f in "$DIR"/distfeeds.list; do
+	[ -f "$f" ] || continue
+	# 逐行看:凡是 "packages/<arch>/<feed>" 形式,且 <feed> 不在已知列表里的,注释掉
+	awk -v known="$KNOWN" '
+		/^[[:space:]]*#/ { print; next }
+		{
+			line = $0
+			# 取 /packages/<arch>/<feed> 里的 <feed>
+			if (match(line, /\/packages\/[^\/]+\/[^\/]+/)) {
+				seg = substr(line, RSTART, RLENGTH)
+				n = split(seg, a, "/")
+				feed = a[n]
+				found = 0
+				m = split(known, k, " ")
+				for (i = 1; i <= m; i++) if (k[i] == feed) found = 1
+				if (!found) {
+					print "# openfi: 该源在镜像上不存在(404),已注释: " line
+					next
+				}
+			}
+			print
+		}
+	' "$f" > "$f.new" && mv "$f.new" "$f"
+done
+
+# 清理可能残留的临时文件
+rm -f "$DIR"/*.list.new 2>/dev/null
+
+exit 0
