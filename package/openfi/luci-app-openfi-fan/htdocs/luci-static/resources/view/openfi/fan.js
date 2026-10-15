@@ -293,6 +293,9 @@ return view.extend({
 							: _('下发失败')),
 						r.code === 0 ? 'info' : 'error');
 					return refresh();
+				}).catch(function (e) {
+					ui.addNotification(null,
+						E('p', {}, _('下发失败:') + ' ' + e), 'error');
 				});
 			})
 		}, _('手动调速一次'));

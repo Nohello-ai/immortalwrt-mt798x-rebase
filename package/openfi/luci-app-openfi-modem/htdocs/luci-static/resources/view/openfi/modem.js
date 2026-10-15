@@ -153,6 +153,9 @@ return view.extend({
 						ui.addNotification(null, E('p', {},
 							r.code === 0 ? _('已发出复位') : _('复位失败')),
 							r.code === 0 ? 'info' : 'error');
+					}).catch(function (e) {
+						ui.addNotification(null,
+							E('p', {}, _('复位失败:') + ' ' + e), 'error');
 					});
 				})
 			}, _('硬复位'))

@@ -85,6 +85,9 @@ return view.extend({
 									opened[m.id] = true;
 									m.read = true;
 									return reload();
+								}).catch(function (e) {
+									ui.addNotification(null,
+										E('p', {}, _('打开失败:') + ' ' + e), 'error');
 								});
 							})
 						}, isOpen ? _('收起') : _('查看')),
@@ -95,6 +98,9 @@ return view.extend({
 								if (!confirm(_('删除这条短信?'))) return;
 								return fs.exec(BIN, ['delete', m.id]).then(function () {
 									return reload();
+								}).catch(function (e) {
+									ui.addNotification(null,
+										E('p', {}, _('删除失败:') + ' ' + e), 'error');
 								});
 							})
 						}, _('删除'))
@@ -115,7 +121,10 @@ return view.extend({
 						'class': 'btn cbi-button cbi-button-remove',
 						'click': ui.createHandlerFn(self, function () {
 							if (!confirm(_('确定要删除全部短信吗?'))) return;
-							return fs.exec(BIN, ['delete', 'all']).then(function () { return reload(); });
+							return fs.exec(BIN, ['delete', 'all']).then(function () { return reload(); }).catch(function (e) {
+								ui.addNotification(null,
+									E('p', {}, _('全部删除失败:') + ' ' + e), 'error');
+							});
 						})
 					}, _('全部删除'))
 				])
