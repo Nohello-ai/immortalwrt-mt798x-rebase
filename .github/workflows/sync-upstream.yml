@@ -1,0 +1,230 @@
+name: sync-upstream
+
+#
+# 自动拉取上游更新（chasey-dev/immortalwrt-mt798x-rebase）
+#
+# ── 为什么单独一个工作流，不写在 build.yml 里 ─────────────────────────────
+#   build.yml 管的是"编固件"，动辄一小时；同步只是几个 git 命令、几秒钟。
+#   混在一起的话，同步失败会把构建也带挂，而且日志搅在一块不好看。
+#
+# ── 它做什么 ────────────────────────────────────────────────────────────
+#   ① 把上游分支拉下来，更新我们 fork 的同名分支（默认 25.12）
+#      · 这个分支是【纯上游】，只做快进，不掺我们的东西
+#   ② 然后开一个 PR：把 25.12 合进 openfi-6c
+#      · ★ 故意【不自动合并】。openfi-6c 上有我们的设备支持和三个包，
+#        上游改了同一片区域（比如 hnat 补丁、filogic.mk）就会冲突，
+#        这种冲突必须人看一眼再决定怎么解，自动合并很容易悄悄丢掉我们的改动。
+#      · 已经有同名的 PR 就不重复开（否则每天一个，很快一堆）。
+#
+# ── 怎么触发 ────────────────────────────────────────────────────────────
+#   · 定时：每天 UTC 20:00（北京时间凌晨 4 点，这时候没人用）
+#   · 手动：Actions → sync-upstream → Run workflow（可指定分支）
+#
+# ── 需要的权限 ──────────────────────────────────────────────────────────
+#   contents: write       推 fork 的分支
+#   pull-requests: write  开 PR
+#   用的是仓库自带的 GITHUB_TOKEN，不用额外配 secret。
+#
+
+on:
+  schedule:
+    # UTC 20:00 = 北京时间 04:00
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_branch:
+        description: '要同步的上游分支'
+        required: true
+        default: '25.12'
+        type: choice
+        options:
+          - '25.12'
+          - '25.12-dev-wifi7'
+          - 'openwrt-25.12'
+      base_branch:
+        description: '把我们自己的哪个分支合上去'
+        required: true
+        default: 'openfi-6c'
+        type: string
+      open_pr:
+        description: '有更新时开 PR（关掉就只更新 25.12 分支）'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  # 同一时间只跑一个，避免两次同步互相打架
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: 拉取上游并开 PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 取出我们 fork 的 25.12 分支
+        uses: actions/checkout@v4
+        with:
+          # 明确指到自己这个仓库（fork），而不是上游
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.inputs.upstream_branch || '25.12' }}
+          # 要能往前推，所以不能只取一个提交
+          fetch-depth: 0
+          # GITHUB_TOKEN 默认只在当前仓库有写权限，正合适
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - name: 配置 git 身份
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: 添加上游远端并拉取
+        id: fetch
+        env:
+          UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch || '25.12' }}
+        run: |
+          set -eu
+          git remote add upstream https://github.com/chasey-dev/immortalwrt-mt798x-rebase.git 2>/dev/null \
+            || git remote set-url upstream https://github.com/chasey-dev/immortalwrt-mt798x-rebase.git
+
+          echo "拉取上游 $UPSTREAM_BRANCH ..."
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+
+          BEFORE=$(git rev-parse HEAD)
+          AFTER=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
+          BEHIND=$(git rev-list --count "HEAD..upstream/$UPSTREAM_BRANCH" || echo 0)
+
+          echo "  本地 HEAD : ${BEFORE:0:10}"
+          echo "  上游 HEAD : ${AFTER:0:10}"
+          echo "  落后提交数: $BEHIND"
+
+          echo "before=$BEFORE"  >> "$GITHUB_OUTPUT"
+          echo "after=$AFTER"    >> "$GITHUB_OUTPUT"
+          echo "behind=$BEHIND"  >> "$GITHUB_OUTPUT"
+          echo "changed=$([ "$BEFORE" != "$AFTER" ] && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
+
+          # 上游新增了什么（只列标题，方便在日志里一眼看到）
+          if [ "$BEHIND" -gt 0 ]; then
+            echo "──── 上游新增的提交 ────"
+            git log --oneline --no-decorate "HEAD..upstream/$UPSTREAM_BRANCH" | head -40
+          fi
+
+      - name: 快进我们 fork 的分支
+        id: push
+        if: steps.fetch.outputs.changed == '1'
+        env:
+          UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch || '25.12' }}
+        run: |
+          set -eu
+          # 这个分支是纯上游镜像，理论上永远能快进。
+          # 万一不能（有人往这个分支上直接提交过），就明确报错，
+          # 不要用 merge 硬合 —— 那样两边就悄悄分叉了。
+          AFTER=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
+
+          if git merge-base --is-ancestor HEAD "upstream/$UPSTREAM_BRANCH"; then
+            git merge --ff-only "upstream/$UPSTREAM_BRANCH"
+            git push origin "HEAD:$UPSTREAM_BRANCH"
+            echo "pushed=1" >> "$GITHUB_OUTPUT"
+            echo "✅ 已把 $UPSTREAM_BRANCH 快进到 $AFTER"
+          else
+            echo "::error::$UPSTREAM_BRANCH 无法快进 —— 这个分支本应是纯上游镜像，"
+            echo "::error::但有人往上面提交过。请人工确认后再同步。"
+            exit 1
+          fi
+
+      - name: 检查 25.12 是否已经合进目标分支
+        id: check
+        if: steps.push.outputs.pushed == '1'
+        env:
+          BASE_BRANCH: ${{ github.event.inputs.base_branch || 'openfi-6c' }}
+        run: |
+          set -eu
+          git fetch --no-tags origin "$BASE_BRANCH"
+          AHEAD=$(git rev-list --count "origin/$BASE_BRANCH..HEAD" || echo 0)
+          echo "目标分支落后 $AHEAD 个提交"
+          echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
+          echo "need_pr=$([ "$AHEAD" -gt 0 ] && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
+
+      - name: 开 PR（把 25.12 合进我们的分支）
+        id: pr
+        if: |
+          steps.check.outputs.need_pr == '1' &&
+          (github.event_name != 'workflow_dispatch' || github.event.inputs.open_pr != 'false')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch || '25.12' }}
+          BASE_BRANCH: ${{ github.event.inputs.base_branch || 'openfi-6c' }}
+        run: |
+          set -eu
+          HEAD_BRANCH="$UPSTREAM_BRANCH"
+
+          # ★ 已经有同 head/base 的 PR 就不重复开。
+          #   每天开一个的话，一周就十几条，真正要看的反而找不到。
+          EXIST=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+                    --base "$BASE_BRANCH" --head "$HEAD_BRANCH" \
+                    --state open --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXIST" ]; then
+            echo "已有 PR #$EXIST，不再新建"
+            echo "url=$(gh pr view "$EXIST" --repo "$GITHUB_REPOSITORY" --json url --jq .url)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          COUNT=${{ steps.check.outputs.ahead }}
+          BODY=$(cat <<EOF
+          自动同步：把上游 \`$UPSTREAM_BRANCH\` 合进 \`$BASE_BRANCH\`。
+
+          这次共 **$COUNT** 个新提交。上游新增的内容：
+
+          \`\`\`
+          $(git log --oneline --no-decorate "origin/$BASE_BRANCH..HEAD" | head -60)
+          \`\`\`
+
+          ---
+
+          ### 合并前请确认
+
+          - [ ] 上游有没有动到我们的设备支持
+                （\`target/linux/mediatek/dts/mt7981b-openfi-6c.dts\`、
+                 \`target/linux/mediatek/image/filogic.mk\`、
+                 \`target/linux/mediatek/filogic/base-files/etc/board.d/02_network\`）
+          - [ ] 上游有没有动到 \`package/openfi/\` 依赖的东西
+          - [ ] 上游有没有动到 HNAT / 内核补丁（\`patches-6.12/\`）
+          - [ ] 冲突解完以后，本地的板级自检要过：
+                \`sh tests/test-usbmode.sh\`、\`sh scripts/openfi/check-musl.sh\`
+
+          > 这个 PR 是**故意不自动合并**的：openfi-6c 上有我们的设备支持和三个包，
+          > 上游改了同一片区域就会冲突。自动合并很容易把我们的改动悄悄冲掉。
+          EOF
+          )
+
+          gh pr create --repo "$GITHUB_REPOSITORY" \
+            --base "$BASE_BRANCH" --head "$HEAD_BRANCH" \
+            --title "同步上游 $UPSTREAM_BRANCH → $BASE_BRANCH（$COUNT 个提交）" \
+            --body "$BODY"
+
+          URL=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+                  --base "$BASE_BRANCH" --head "$HEAD_BRANCH" \
+                  --state open --json url --jq '.[0].url')
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "✅ PR: $URL"
+
+      - name: 汇总
+        if: always()
+        run: |
+          echo "======== 同步结果 ========"
+          echo "上游分支    : ${{ github.event.inputs.upstream_branch || '25.12' }}"
+          echo "上游提交    : ${{ steps.fetch.outputs.after }}"
+          echo "本地原来    : ${{ steps.fetch.outputs.before }}"
+          echo "落后提交数  : ${{ steps.fetch.outputs.behind }}"
+          echo "有更新      : ${{ steps.fetch.outputs.changed == '1' && '是' || '否' }}"
+          echo "已推送到fork: ${{ steps.push.outputs.pushed == '1' && '是' || '否' }}"
+          echo "目标分支落后: ${{ steps.check.outputs.ahead || '—' }}"
+          echo "PR          : ${{ steps.pr.outputs.url || '（没有新建，或已存在）' }}"

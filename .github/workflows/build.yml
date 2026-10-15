@@ -47,6 +47,20 @@ on:
       - 'scripts/openfi/**'
       - 'target/linux/mediatek/dts/mt7981b-openfi-6c.dts'
       - 'target/linux/mediatek/image/filogic.mk'
+      # ★ 内核补丁目录 —— 少了这条,改了 hnat / dts 之类的补丁推上去
+      #   什么都不会发生(以为在编,其实没跑)。踩过一次:
+      #   跟进上游 hnat mcast_table 空指针修复(issues/113)时推了补丁,
+      #   等了半天没构建,查 paths 才发现漏了这一条。
+      - 'target/linux/mediatek/patches-6.12/**'
+      # 板级 base-files(02_network 的 LAN/WAN 与 MAC 规则在这里,
+      # 写错的表现是"刷完没有网络")
+      - 'target/linux/mediatek/filogic/base-files/**'
+      # files/ 覆盖目录(openfi-usbmode 脚本 + init.d + 默认配置)
+      - 'files/**'
+      # 测试
+      - 'tests/**'
+      # 同步工作流也跟着跑一次(改完同步逻辑后验证用)
+      - '.github/workflows/sync-upstream.yml'
       - '.github/workflows/build.yml'
   schedule:
     - cron: '0 18 * * 0'
