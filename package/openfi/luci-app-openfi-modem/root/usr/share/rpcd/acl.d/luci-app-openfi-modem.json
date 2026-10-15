@@ -44,7 +44,7 @@
 				]
 			},
 			"uci": [
-				"openfi"
+				"openfi_modem"
 			]
 		},
 		"write": {
@@ -89,7 +89,7 @@
 				]
 			},
 			"uci": [
-				"openfi"
+				"openfi_modem"
 			]
 		}
 	}

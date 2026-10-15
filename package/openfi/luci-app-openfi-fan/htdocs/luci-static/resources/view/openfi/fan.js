@@ -195,7 +195,7 @@ return view.extend({
 		}
 
 		/* ---- 表单 ---- */
-		var m = new form.Map('openfi', _('风扇控制'),
+		var m = new form.Map('openfi_fan', _('风扇控制'),
 			_('温度曲线是四段阶梯:温度落在哪一段,就用那一段的转速。本板 PWM 是反极性的,界面里的百分比已经是"风扇转速"。'));
 
 		var s1 = m.section(form.NamedSection, 'fan', 'fan', _('基本'));

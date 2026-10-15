@@ -156,6 +156,12 @@ jobs:
           # 却无条件去解析串口,在采样进程的锁上最长等 72 秒。
           # 这个测试【真的把程序跑起来并计时】,再变回去就会当场超时。
           [ -x tests/test-sms-cli.sh ] && { sh tests/test-sms-cli.sh || fail=1; }
+          # ★ 跨包一致性检查。这类 bug 已经咬过三次,而且都能过编译、过单元测试,
+          #   直到上机点开页面才炸:改配置名时漏改同一文件里的 form.Map、
+          #   漏改另一个包的 ACL、ACL 与菜单 depends 对不上……
+          #   这个脚本机器核对:JS 的 uci 引用 / ACL 的 uci 权限 / uci-defaults
+          #   建的配置文件 / C 代码的包名,四者必须指向同一个配置。
+          [ -x scripts/openfi/check-consistency.sh ] && { sh scripts/openfi/check-consistency.sh || fail=1; }
 
           chk feeds.conf.default
 
