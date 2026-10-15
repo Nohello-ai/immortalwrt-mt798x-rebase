@@ -133,6 +133,35 @@ static const char *find_field(const char *js, const char *key, char *out, size_t
 	return out;
 }
 
+void sms_store_content_id(const struct sms_msg *msg, char *out, size_t n)
+{
+	unsigned long h = 2166136261UL;	/* FNV-1a 初始值 */
+	const char *parts[3];
+	int i;
+
+	if (!out || n == 0)
+		return;
+	if (!msg) {
+		snprintf(out, n, "c00000000");
+		return;
+	}
+	parts[0] = msg->pdu.addr;
+	parts[1] = msg->pdu.ts;
+	parts[2] = msg->pdu.text;
+	for (i = 0; i < 3; i++) {
+		const unsigned char *p = (const unsigned char *)(parts[i] ? parts[i] : "");
+
+		while (*p) {
+			h ^= *p++;
+			h *= 16777619UL;
+		}
+		/* 字段之间插个分隔,免得 "ab"+"c" 和 "a"+"bc" 撞成同一个 id */
+		h ^= 0xffUL;
+		h *= 16777619UL;
+	}
+	snprintf(out, n, "c%08lx", h & 0xffffffffUL);
+}
+
 int sms_store_save(struct sms_msg *msg)
 {
 	char js[SMS_HEX_MAX + 512];

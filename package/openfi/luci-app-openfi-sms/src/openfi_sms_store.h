@@ -45,6 +45,19 @@ int sms_store_init(void);
 /* 存一条,id 为空则自动生成。成功 0(会把 id 回填到 msg->id) */
 int sms_store_save(struct sms_msg *msg);
 
+/*
+ * 用【内容】算一个稳定的 id(地址+时间戳+正文 的 FNV-1a)。
+ *
+ * 【为什么不能只用时间戳 id】
+ *   模组上的短信会被反复读到 —— 尤其是已读的(我们不会去删用户的已读短信,
+ *   见 fetch_unread 里"只删未读"的说明)。
+ *   原来的 id 是"当前时间+序号",每读一次都是新的 → 每次都存一份新文件,
+ *   页面很快堆满同一条短信的几十份副本。
+ *   内容 id 是确定的:同一条短信每次算出来一模一样,
+ *   存过一次之后 sms_store_get 就能命中,直接跳过。
+ */
+void sms_store_content_id(const struct sms_msg *msg, char *out, size_t n);
+
 /* 按 id 读一条。成功 0,找不到 -1 */
 int sms_store_get(const char *id, struct sms_msg *msg);
 

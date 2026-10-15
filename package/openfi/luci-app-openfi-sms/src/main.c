@@ -160,7 +160,20 @@ static int resolve_at_port(char *out, size_t n, int baud, int timeout_ms)
 	return -1;
 }
 
-static void cfg_load(struct sms_cfg *c)
+/*
+ * need_port: 只有真的要跟模组说话的命令(send / collect / selftest)才传 1。
+ *
+ * 【为什么必须区分 —— 真机上页面卡死就是这个原因】
+ *   list / read / unread / delete 都只读本地存储,本来【不需要碰串口】。
+ *   但早期版本无条件调 resolve_at_port(),而它在拿不到 modem 缓存时
+ *   会【逐个尝试打开串口】:
+ *       6 个候选口 × 每个在锁上等 12 秒 = 最长 72 秒
+ *   于是 LuCI 页面的 fs.exec('/usr/bin/openfi-sms list 100') 一直不返回,
+ *   页面就一直转圈(表现:短信页完全空白 / 永远加载中)。
+ *
+ *   锁是采样进程持有的,拿不到很正常 —— 所以这些纯本地操作压根不该去抢。
+ */
+static void cfg_load(struct sms_cfg *c, int need_port)
 {
 	char *p = ouci_get("openfi_sms", "sms", "at_port");
 
@@ -169,13 +182,14 @@ static void cfg_load(struct sms_cfg *c)
 	c->baud = (int)ouci_get_int("openfi_sms", "sms", "baud", 115200);
 	c->timeout_ms = (int)ouci_get_int("openfi_sms", "sms", "timeout_ms", 2000);
 
-	/* ① 显式路径 */
-	if (p && *p && strcmp(p, "auto") != 0 && p[0] == '/') {
+	if (!need_port) {
+		/* 用不到串口:不去解析、不去抢锁 */
+		c->at_port[0] = '\0';
+	} else if (p && *p && strcmp(p, "auto") != 0 && p[0] == '/') {
+		/* ① 显式路径 */
 		copy_str(c->at_port, sizeof(c->at_port), p);
-		free(p);
 	} else {
-		free(p);
-		/* ② / ③ 复用或探测 */
+		/* ② / ③ 复用 modem 采样结果,或自己探 */
 		if (resolve_at_port(c->at_port, sizeof(c->at_port),
 				    c->baud, c->timeout_ms) != 0) {
 			/* 实在拿不到就先留空,open_port 会失败并打日志,
@@ -183,6 +197,7 @@ static void cfg_load(struct sms_cfg *c)
 			c->at_port[0] = '\0';
 		}
 	}
+	free(p);
 	p = ouci_get("openfi_sms", "sms", "sca");
 	copy_str(c->sca, sizeof(c->sca), p ? p : "");
 	free(p);
@@ -239,12 +254,22 @@ static int import_cmgl(const char *resp)
 
 			memset(&m, 0, sizeof(m));
 			if (sms_decode_pdu(s, &m.pdu) == 0) {
+				struct sms_msg old;
+
+				/* ★ 内容 id:同一条短信重复读到不会堆重复。
+				   读的是【全部】短信(含已读),已读的又不会从模组删掉,
+				   所以每一轮都会再读到它们 —— 没有这个去重,页面很快就
+				   堆满同一条短信的几十份副本。 */
+				sms_store_content_id(&m, m.id, sizeof(m.id));
+				if (sms_store_get(m.id, &old) == 0) {
+					pending_index = -1;
+					continue;
+				}
 				m.received_at = (long)time(NULL);
 				m.read = 0;
 				if (sms_store_save(&m) == 0) {
 					imported++;
 					olog_info("收到短信 来自 %s:%s", m.pdu.addr, m.pdu.text);
-					/* 存下来之后把模组里这条删掉,别把模组塞满 */
 				}
 			}
 			pending_index = -1;
@@ -270,8 +295,18 @@ static int fetch_unread(const struct sms_cfg *c)
 		return -1;
 	}
 
-	/* 先把所有未读列出来 */
-	if (at_cmd(&port, "AT+CMGL=\"REC UNREAD\"", c->timeout_ms * 3, &r) != 0) {
+	/* ★ 先切 PDU 模式 —— 命令必须和模式匹配。
+	 *
+	 *   原来这里直接发文本模式的 AT+CMGL="REC UNREAD",但从不设置模式。
+	 *   而发送链路会把模组设成 PDU 模式(AT+CMGF=0) —— 于是只要发过
+	 *   一条短信,读取就永远失败:PDU 模式下 "REC UNREAD" 是非法的,
+	 *   模组直接回 CMS ERROR。真机现象:卡里 47 条,页面显示 0 条。 */
+	at_cmd(&port, "AT+CMGF=0", c->timeout_ms, &r);
+
+	/* ★ 读【全部】,不只是未读 —— 已读的也应该能看到。
+	 *   PDU 模式的参数:0=未读 1=已读 2=未发 3=已发 4=全部。
+	 *   去重靠内容 id(见 import_cmgl),所以每轮全量读不会堆重复。 */
+	if (at_cmd(&port, "AT+CMGL=4", c->timeout_ms * 3, &r) != 0) {
 		at_close(&port);
 		return -1;
 	}
@@ -281,15 +316,21 @@ static int fetch_unread(const struct sms_cfg *c)
 	}
 	imported = import_cmgl(all);
 
-	/* 记下模组上未读短信的索引,导入后删掉(释放模组存储)*/
+	/* ★ 只删【未读】的(释放模组存储),已读的留在卡上。
+	 *
+	 *   PDU 模式下包头是 "+CMGL: <索引>,<状态>,<alpha>,<长度>",
+	 *   状态 0 = 未读。用户的已读短信不该由我们替他决定删掉 ——
+	 *   而且不删才能让它们在页面上一直看得到(靠内容 id 去重)。 */
 	{
 		const char *p = all;
 
 		while ((p = strstr(p, "+CMGL:"))) {
-			int idx = (int)strtol(p + 6, NULL, 10);
+			int idx = 0, stat = -1;
 
-			if (nidx < (int)(sizeof(indices) / sizeof(indices[0])))
-				indices[nidx++] = idx;
+			if (sscanf(p + 6, "%d,%d", &idx, &stat) == 2 && stat == 0) {
+				if (nidx < (int)(sizeof(indices) / sizeof(indices[0])))
+					indices[nidx++] = idx;
+			}
 			total_on_modem++;
 			p += 6;
 		}
@@ -630,14 +671,25 @@ int main(int argc, char **argv)
 		if (e && *e)
 			sms_store_set_dir(e);
 	}
-	cfg_load(&cfg);
-	sms_store_init();
-
 	if (argc < 2) {
 		usage();
 		return 1;
 	}
 	const char *act = argv[1];
+
+	/*
+	 * ★ 只有真的要跟模组说话的命令才去解析串口。
+	 *   list / read / unread / delete 是纯本地存储操作,解析串口会让它们
+	 *   在采样进程的锁上最多等 72 秒 —— 网页那边就是"一直转圈"。
+	 */
+	{
+		int need_port = (!strcmp(act, "send") ||
+				 !strcmp(act, "collect") ||
+				 !strcmp(act, "selftest"));
+
+		cfg_load(&cfg, need_port);
+	}
+	sms_store_init();
 
 	if (!strcmp(act, "list")) {
 		int max = (argc > 2) ? atoi(argv[2]) : 50;
