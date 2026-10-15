@@ -59,8 +59,6 @@ on:
       - 'files/**'
       # 测试
       - 'tests/**'
-      # 同步工作流也跟着跑一次(改完同步逻辑后验证用)
-      - '.github/workflows/sync-upstream.yml'
       - '.github/workflows/build.yml'
   schedule:
     - cron: '0 18 * * 0'

@@ -205,16 +205,38 @@ jobs:
           EOF
           )
 
-          gh pr create --repo "$GITHUB_REPOSITORY" \
-            --base "$BASE_BRANCH" --head "$HEAD_BRANCH" \
-            --title "同步上游 $UPSTREAM_BRANCH → $BASE_BRANCH（$COUNT 个提交）" \
-            --body "$BODY"
+          # ★ 开 PR 需要仓库开启 "Allow GitHub Actions to create and approve pull requests"。
+          #   默认是【关】的,直接调 gh pr create 会报:
+          #     GraphQL: GitHub Actions is not permitted to create or approve pull requests
+          #   那一步整个失败,把前面已经成功的同步也带成红灯 —— 没必要。
+          #   所以这里【降级】:先试 PR,不行就推一个待合并分支,
+          #   人在网页上点两下就能开 PR。
+          if gh pr create --repo "$GITHUB_REPOSITORY" \
+               --base "$BASE_BRANCH" --head "$HEAD_BRANCH" \
+               --title "同步上游 $UPSTREAM_BRANCH → $BASE_BRANCH（$COUNT 个提交）" \
+               --body "$BODY" 2>/tmp/pr.err; then
+            URL=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+                    --base "$BASE_BRANCH" --head "$HEAD_BRANCH" \
+                    --state open --json url --jq '.[0].url')
+            echo "url=$URL" >> "$GITHUB_OUTPUT"
+            echo "✅ PR: $URL"
+          else
+            echo "::warning::建不了 PR（仓库未开启 Actions 创建 PR 的权限）"
+            sed 's/^/    /' /tmp/pr.err || true
 
-          URL=$(gh pr list --repo "$GITHUB_REPOSITORY" \
-                  --base "$BASE_BRANCH" --head "$HEAD_BRANCH" \
-                  --state open --json url --jq '.[0].url')
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "✅ PR: $URL"
+            SYNC_BRANCH="sync/$UPSTREAM_BRANCH-into-$BASE_BRANCH"
+            git push --force origin "HEAD:refs/heads/$SYNC_BRANCH"
+            echo ""
+            echo "改为推送一个待合并分支:$SYNC_BRANCH"
+            echo "点这里开 PR:"
+            echo "  https://github.com/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$SYNC_BRANCH?expand=1"
+            echo "url=https://github.com/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$SYNC_BRANCH?expand=1" >> "$GITHUB_OUTPUT"
+          fi
+
+          # ★ 无论如何都不要让这一步失败:
+          #   同步本身已经成功了(25.12 分支已经更新),PR 只是"通知手段",
+          #   它的权限问题不该把整个工作流标红。
+          exit 0
 
       - name: 汇总
         if: always()
