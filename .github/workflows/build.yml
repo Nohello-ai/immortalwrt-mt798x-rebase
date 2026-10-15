@@ -136,6 +136,11 @@ jobs:
               || { echo "::error::$f 权限不是 755(固件里会执行不了)"; fail=1; }
           done
           [ -x tests/test-usbmode.sh ] && { sh tests/test-usbmode.sh || fail=1; }
+          # 短信命令行的回归测试。
+          # 起因是网页「短信」一直转圈:list/read/unread/delete 只读本地存储,
+          # 却无条件去解析串口,在采样进程的锁上最长等 72 秒。
+          # 这个测试【真的把程序跑起来并计时】,再变回去就会当场超时。
+          [ -x tests/test-sms-cli.sh ] && { sh tests/test-sms-cli.sh || fail=1; }
 
           chk feeds.conf.default
 
