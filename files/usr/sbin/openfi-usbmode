@@ -1,4 +1,9 @@
 #!/bin/sh
+# shellcheck shell=ash
+#
+# ★ 目标 shell 是 busybox 的 ash(OpenWrt 的 /bin/sh),不是严格 POSIX。
+#   ash 支持 `local`,所以下面那几处 SC3043("local 在 POSIX sh 里未定义")
+#   在本环境下是良性的 —— 这里显式声明目标,免得每次都当问题查。
 #
 # openfi-usbmode —— 开机自动探测模组最佳的 USB 数据模式，并把结果锁下来。
 #
@@ -52,11 +57,14 @@ TAG=openfi-usbmode
 # 【不含 ECM(1)】：ECM 和 NCM 属同一类 CDC 以太网协议，NCM 起不来的
 # 场合 ECM 基本也起不来。而且实测这台模组的 usbnet 支持
 # 1/2/3/5/11/13/15，NCM 本来就在列表里。
+# 探测顺序:先试 NCM(更快更干净),不通再退回 RNDIS。
+# ★ 这个变量在脚本正文里【不再被引用】—— 但不要删:
+#   tests/test-usbmode.sh 会断言它等于 "5 3",它是"我们支持的顺序"
+#   这件事的唯一声明处。删掉测试就失去基准了。
+# shellcheck disable=SC2034
 CHAIN="5 3"
 
-MAX_TRIES=6			# 每次开机最多切换几次
 REENUM_WAIT=60			# 等 USB 重新枚举 + AT 口复活的上限（秒）
-LINK_WAIT=25			# 等地址 + 验连通的上限（秒）
 
 log() { logger -t "$TAG" "$*"; }
 

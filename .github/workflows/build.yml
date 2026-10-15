@@ -122,6 +122,21 @@ jobs:
           # 这个检查只告警、不阻塞构建 ——
           # 检查脚本本身也会写错(上次就是它路径写错挡住了构建,
           # 白白多跑一次)。它发现问题时在日志里喊出来就够了。
+          # ★ 防回归:这个脚本【必须能从任意工作目录调用】。
+          #   踩过两次:它一开始在 scripts/,后来挪到 scripts/openfi/,
+          #   那句按固定层级回退的 cd 就少退了一级,直接报
+          #       cd: can't cd to scripts/openfi
+          #   更坑的是修好之后又被一次「没先读文件就改」的提交覆盖回去(4cc649f),
+          #   而检查本身只 warning、不阻塞,所以没人发现。这里明确拦住。
+          # ★ 要【先去掉注释行】再判断:
+          #   文件里的注释本身就会引用那个坏写法作说明(「不要再写 cd ...」),
+          #   直接 grep 整个文件会误报 —— 第一版就是这么写的,一跑就红。
+          if grep -vE '^[[:space:]]*#' scripts/openfi/check-musl.sh \
+               | grep -q 'dirname "\$0")/\.\.'; then
+            echo "::error::check-musl.sh 又用了按固定层级回退的 cd —— 从别的目录调用会失败"
+            fail=1
+          fi
+          
           if ! timeout 240 sh scripts/openfi/check-musl.sh; then
             echo "::warning::musl 编译检查没跑完(超时或有问题)—— 看上面的输出"
           fi

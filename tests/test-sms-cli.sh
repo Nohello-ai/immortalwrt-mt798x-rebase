@@ -92,11 +92,29 @@ export OPENFI_AT_LOCK="$TMP/at.lock"
 # 万一真的去探测，把等待时间压到 1 秒，避免测试挂太久
 export OPENFI_AT_LOCK_WAIT="1"
 
+# ★ 这个上限【必须真的生效】。
+#   第一版写了 `LIMIT="$1"` 却从来没用过 —— 注释说"秒上限",
+#   实际没有任何保护:万一将来又变回"无条件抢串口",测试会【一直挂着】,
+#   而不是干脆地失败。CI 里挂住比失败还难查。
 timed() { # $1=秒上限  $2...=命令
 	LIMIT="$1"; shift
 	START=$(cut -d' ' -f1 /proc/uptime 2>/dev/null || date +%s)
-	"$@" >"$TMP/out" 2>"$TMP/err"
-	RC=$?
+
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "$LIMIT" "$@" >"$TMP/out" 2>"$TMP/err"
+		RC=$?
+	else
+		# 没有 timeout 就自己来:后台跑 + 定时杀掉
+		"$@" >"$TMP/out" 2>"$TMP/err" &
+		PID=$!
+		( sleep "$LIMIT"; kill "$PID" 2>/dev/null ) 2>/dev/null &
+		WAITER=$!
+		wait "$PID" 2>/dev/null
+		RC=$?
+		kill "$WAITER" 2>/dev/null
+		wait "$WAITER" 2>/dev/null
+	fi
+
 	END=$(cut -d' ' -f1 /proc/uptime 2>/dev/null || date +%s)
 	ELAPSED=$(awk "BEGIN{printf \"%.1f\", $END-$START}")
 	echo "$ELAPSED $RC"
