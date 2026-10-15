@@ -13,27 +13,31 @@
 /logs
 /feeds
 /feeds.conf
-# 上游把 /files 当"用户私人覆盖目录"排除掉。
-# 但【我们的板级文件就在 files/ 里】—— openfi-usbmode 管的是 5G 模组
-# 的 USB 数据模式,也就是 WAN 怎么出来。整目录排除会让 `git add -A`
-# 【静默跳过】它:本地测试全过,CI 里却因为文件不存在而失败。
-# (6.6 那棵树踩过这个坑,当时的补救是 git add -f,规则本身没动。)
+# ── files/ 全部纳入版本管理 ─────────────────────────────────────────────
 #
-# 这里改成:只排除我们没显式放开的那些路径。
-/files/*
-!/files/usr/
-/files/usr/*
-!/files/usr/sbin/
-/files/usr/sbin/*
-!/files/usr/sbin/openfi-usbmode
-!/files/etc/
-/files/etc/*
-!/files/etc/init.d/
-/files/etc/init.d/*
-!/files/etc/init.d/openfi-usbmode
-!/files/etc/config/
-/files/etc/config/*
-!/files/etc/config/openfi_usbmode
+# 上游把 /files 当"用户私人覆盖目录"整个排除掉,我们【不能照抄】——
+# 我们的板级文件就在 files/ 里(openfi-usbmode 管的是 5G 模组的 USB
+# 数据模式,也就是 WAN 怎么出来)。
+#
+# ★ 曾经写成白名单:先 /files/* 全忽略,再逐个 ! 放开。
+#   问题是每加一个文件要写【两条】规则(目录一条、文件一条),
+#   漏一条就会被【静默跳过】:
+#       本地一切正常 → git add -A 不报错 → 提交里没有那个文件
+#       → CI 里因为文件不存在而失败,或者更糟:构建出来缺东西但没人发现
+#
+#   这个坑踩过两次:
+#     · 6.6 那棵树的 openfi-usbmode(当时的补救是 git add -f)
+#     · 95-openfi-apk-mirror —— 提交 8e2318b 只提交了 build.yml,
+#       脚本本身被忽略,构建出来的固件里也就没有它
+#
+# ★ 所以改成反过来:默认【全部跟踪】。
+#   代价是:你自己往 files/ 里放私人文件时会显示为未跟踪 ——
+#   那正好是提醒,而不是静默丢失。
+#
+# 确实不想跟踪的,在这里单独列出来即可。
+/files/**/*.bak
+/files/**/*.orig
+/files/**/*.rej
 /target/linux/feeds
 /overlay
 /package/feeds
