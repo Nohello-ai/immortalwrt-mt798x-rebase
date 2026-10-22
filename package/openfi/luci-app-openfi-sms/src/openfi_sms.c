@@ -501,15 +501,28 @@ int sms_decode_pdu(const char *hex, struct sms *s)
 	if (n < 10)
 		return -1;
 
-	/* ① 短信中心 */
-	smsc_len = b[i++];			/* ★ 数字个数 */
+	/* ① 短信中心
+	 *
+	 * ★ 这里是整个解码器最容易被写错的地方:
+	 *   SMSC 字段的长度字节记的是【字节数】,而 TP-DA 字段那个记的是
+	 *   【数字个数】—— 两个单位不一样,混用就会整体错位。
+	 *
+	 *   PDU 布局: <smsc_bytes> <类型> <BCD 数字...>
+	 *   例: 08 91 68 31 08 70 19 45 F8  → 08 = 8 字节(类型 1 + 数字 7),
+	 *       字段总长 1 + 8 = 9 字节。
+	 *
+	 *   原来按 "2 + (len+1)/2" 算,对上面这个 PDU 只跳 6 字节,
+	 *   比正确值少 3 字节 —— 于是 FO / 号码 / DCS / 时间戳 / 正文
+	 *   全部往后错 3 个字节,真机上的表现就是"号码是一串乱数字、
+	 *   正文读不出来"。
+	 */
+	smsc_len = b[i++];			/* ★ 字节数,不是数字个数 */
 	if (smsc_len > 0) {
-		int bytes = 2 + (smsc_len + 1) / 2;   /* 长度字节 + 类型字节 + 数字字节 */
-
-		if (i + bytes - 1 > n)
+		if (i + smsc_len > n)
 			return -1;
-		sms_decode_addr(b + i - 1, bytes, s->sca, sizeof(s->sca));
-		i += bytes - 1;
+		/* total_bytes 含开头的长度字节,所以是 smsc_len + 1 */
+		sms_decode_addr(b + i - 1, smsc_len + 1, s->sca, sizeof(s->sca));
+		i += smsc_len;
 	}
 	if (i >= n)
 		return -1;

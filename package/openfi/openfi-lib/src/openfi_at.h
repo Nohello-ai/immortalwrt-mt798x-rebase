@@ -15,7 +15,14 @@
 #include <stddef.h>
 
 #define AT_MAX_LINES 128
-#define AT_LINE_MAX  256
+/*
+ * 单行上限。★ 原来是 256,这是个实打实的 bug:
+ *   AT+CMGR / AT+CMGL 返回的短信是 PDU 十六进制串,
+ *   一条 156 字节的短信就是 312 个字符,255 字节的上限更是 510 个字符。
+ *   256 的缓冲装不下,at_parse 里"超长行直接丢"→ 长短信永远读不出来。
+ *   定成 512 恰好容纳 255 字节(510 字符)的 PDU。
+ */
+#define AT_LINE_MAX  512
 #define AT_MAX_FIELDS 24
 
 /* 最终结果 */

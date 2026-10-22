@@ -214,81 +214,90 @@ static int open_port(const struct sms_cfg *c, struct at_port *p)
 /* ---------------- 收 ---------------- */
 
 /*
- * 把一批 "AT+CMGL" 的输出解析成短信并入库。
- * 模组返回的是【一行索引+状态,一行 PDU】交替:
- *   +CMGL: 1,"REC UNREAD","+8613800138000",,"26/10/10,15:30:12+32"
- *   0791683108108300F0040D91683108108300F000006210100000000005E8329BFD06
- * 返回入库条数。
+ * 读模组上【指定索引】的一条短信并入库。
+ *
+ * 【为什么改成逐条读】
+ *   原来是发一次 AT+CMGL=4 读全部。真机上这个做法根本不可用:
+ *   一条 156 字节的短信,转成 PDU 十六进制是 312 个字符;
+ *   49 条合起来约 17 KB,而 at_cmd 的响应缓冲只有 8 KB、
+ *   at_parse 的单行上限只有 256 字符。于是后半截被静默截掉、
+ *   长 PDU 被整行丢弃 —— 页面永远空白,还一条日志都不留。
+ *   逐条读以后每条响应只有几百字符,缓冲永远够,短信再多也不受影响。
+ *
+ * 返回: 1 = 新入库, 0 = 已存在/空槽, -1 = 出错(已记日志)
+ * stat_out: 模组侧的短信状态(0 = 未读,-1 = 未知)
  */
-static int import_cmgl(const char *resp)
+static int fetch_at_index(struct at_port *port, const struct sms_cfg *c,
+			  int idx, int *stat_out)
 {
-	int imported = 0;
-	const char *p = resp;
-	int pending_index = -1;
+	struct at_resp r;
+	char cmd[24];
+	const char *l;
+	int i;
 
-	while (p && *p) {
-		const char *eol = strchr(p, '\n');
-		size_t len = eol ? (size_t)(eol - p) : strlen(p);
-		char line[1024];
+	if (stat_out)
+		*stat_out = -1;
 
-		if (len >= sizeof(line))
-			len = sizeof(line) - 1;
-		memcpy(line, p, len);
-		line[len] = '\0';
-		/* 去尾部 \r 与空白 */
-		for (size_t i = strlen(line); i && (line[i-1] == '\r' ||
-						    line[i-1] == ' '); i--)
-			line[i-1] = '\0';
-
-		char *s = line;
-		while (*s == ' ' || *s == '\t')
-			s++;
-
-		if (strncmp(s, "+CMGL:", 6) == 0) {
-			/* 记下索引,后面那行 PDU 属于它 */
-			pending_index = (int)strtol(s + 6, NULL, 10);
-		} else if (pending_index >= 0 && *s && strspn(s, "0123456789abcdefABCDEF") == strlen(s)
-			   && strlen(s) > 20) {
-			/* 这就是一条 PDU */
-			struct sms_msg m;
-
-			memset(&m, 0, sizeof(m));
-			if (sms_decode_pdu(s, &m.pdu) == 0) {
-				struct sms_msg old;
-
-				/* ★ 内容 id:同一条短信重复读到不会堆重复。
-				   读的是【全部】短信(含已读),已读的又不会从模组删掉,
-				   所以每一轮都会再读到它们 —— 没有这个去重,页面很快就
-				   堆满同一条短信的几十份副本。 */
-				sms_store_content_id(&m, m.id, sizeof(m.id));
-				if (sms_store_get(m.id, &old) == 0) {
-					pending_index = -1;
-					continue;
-				}
-				m.received_at = (long)time(NULL);
-				m.read = 0;
-				if (sms_store_save(&m) == 0) {
-					imported++;
-					olog_info("收到短信 来自 %s:%s", m.pdu.addr, m.pdu.text);
-				}
-			}
-			pending_index = -1;
-		}
-		if (!eol)
-			break;
-		p = eol + 1;
+	snprintf(cmd, sizeof(cmd), "AT+CMGR=%d", idx);
+	if (at_cmd(port, cmd, c->timeout_ms * 2, &r) != 0) {
+		olog_warn("AT+CMGR=%d 无响应(%s)", idx, at_result_str(r.result));
+		return -1;
 	}
-	return imported;
+	/* 空槽回 ERROR 是正常的,不当错误刷日志 */
+	if (r.result != AT_RES_OK)
+		return 0;
+
+	l = at_find(&r, "+CMGR:");
+	if (!l) {
+		olog_warn("AT+CMGR=%d 响应缺 +CMGR 头", idx);
+		return -1;
+	}
+	if (stat_out)
+		*stat_out = (int)at_csv_int(l, 0, -1);
+
+	/* PDU 在包头之后:纯十六进制、长度 > 20 */
+	for (i = 0; i < r.n; i++) {
+		const char *s = r.lines[i];
+		size_t sl = strlen(s);
+		struct sms_msg m, old;
+
+		if (s[0] == '+' || sl <= 20)
+			continue;
+		if (strspn(s, "0123456789abcdefABCDEF") != sl)
+			continue;
+
+		memset(&m, 0, sizeof(m));
+		if (sms_decode_pdu(s, &m.pdu) != 0) {
+			olog_warn("AT+CMGR=%d PDU 解码失败(%zu 字符)", idx, sl);
+			return -1;
+		}
+		/* 内容 id:同一轮/下一轮再读到不会堆重复 */
+		sms_store_content_id(&m, m.id, sizeof(m.id));
+		if (sms_store_get(m.id, &old) == 0)
+			return 0;
+		m.received_at = (long)time(NULL);
+		/* ★ 已读状态跟模组走。+CMGR 的 stat:0=未读,1=已读,2=未发,3=已发。
+		 *   原来一律写 0,于是 49 条早就读过的短信在页面上全成了"未读"。 */
+		m.read = (stat_out && *stat_out == 1) ? 1 : 0;
+		if (sms_store_save(&m) != 0) {
+			olog_warn("AT+CMGR=%d 入库失败", idx);
+			return -1;
+		}
+		olog_info("收到短信 来自 %s:%s", m.pdu.addr, m.pdu.text);
+		return 1;
+	}
+	olog_warn("AT+CMGR=%d 响应里找不到 PDU 行", idx);
+	return -1;
 }
 
-/* 拉一次未读短信 */
+/* 拉一轮短信 */
 static int fetch_unread(const struct sms_cfg *c)
 {
 	struct at_port port;
 	struct at_resp r;
-	char all[16384] = "";
-	int imported = 0, total_on_modem = 0;
-	int indices[64], nidx = 0;
+	const char *l;
+	int count = 0, imported = 0;
+	int del_idx[64], n_del = 0;
 
 	if (open_port(c, &port) != 0) {
 		olog_warn("打不开 %s", c->at_port);
@@ -300,64 +309,67 @@ static int fetch_unread(const struct sms_cfg *c)
 	 *   原来这里直接发文本模式的 AT+CMGL="REC UNREAD",但从不设置模式。
 	 *   而发送链路会把模组设成 PDU 模式(AT+CMGF=0) —— 于是只要发过
 	 *   一条短信,读取就永远失败:PDU 模式下 "REC UNREAD" 是非法的,
-	 *   模组直接回 CMS ERROR。真机现象:卡里 47 条,页面显示 0 条。 */
+	 *   模组直接回 CMS ERROR。 */
 	at_cmd(&port, "AT+CMGF=0", c->timeout_ms, &r);
 
-	/* ★ 读【全部】,不只是未读 —— 已读的也应该能看到。
-	 *   PDU 模式的参数:0=未读 1=已读 2=未发 3=已发 4=全部。
-	 *   去重靠内容 id(见 import_cmgl),所以每轮全量读不会堆重复。 */
-	if (at_cmd(&port, "AT+CMGL=4", c->timeout_ms * 3, &r) != 0) {
+	/* 问存储容量:AT+CPMS? → +CPMS: "SM",<used>,<total>,...
+	 * ★ 失败要说出来 —— 以前所有失败路径都是静默 return,真机上完全
+	 *   看不出是"没有短信"还是"读不出来"。 */
+	if (at_cmd(&port, "AT+CPMS?", c->timeout_ms, &r) != 0 || r.result != AT_RES_OK) {
+		olog_warn("AT+CPMS? 失败(%s)", at_result_str(r.result));
 		at_close(&port);
 		return -1;
 	}
-	for (int i = 0; i < r.n && strlen(all) + strlen(r.lines[i]) + 2 < sizeof(all); i++) {
-		strcat(all, r.lines[i]);
-		strcat(all, "\n");
+	l = at_find(&r, "+CPMS:");
+	if (l)
+		count = (int)at_csv_int(l, 2, 0);	/* 第 3 个字段 = 总数 */
+
+	if (count <= 0) {
+		at_close(&port);
+		return 0;
 	}
-	imported = import_cmgl(all);
 
-	/* ★ 只删【未读】的(释放模组存储),已读的留在卡上。
-	 *
-	 *   PDU 模式下包头是 "+CMGL: <索引>,<状态>,<alpha>,<长度>",
-	 *   状态 0 = 未读。用户的已读短信不该由我们替他决定删掉 ——
-	 *   而且不删才能让它们在页面上一直看得到(靠内容 id 去重)。 */
-	{
-		const char *p = all;
+	/* 逐条读 —— 内存占用和短信总数无关 */
+	for (int i = 1; i <= count; i++) {
+		int stat = -1;
+		int n = fetch_at_index(&port, c, i, &stat);
 
-		while ((p = strstr(p, "+CMGL:"))) {
-			int idx = 0, stat = -1;
-
-			if (sscanf(p + 6, "%d,%d", &idx, &stat) == 2 && stat == 0) {
-				if (nidx < (int)(sizeof(indices) / sizeof(indices[0])))
-					indices[nidx++] = idx;
-			}
-			total_on_modem++;
-			p += 6;
-		}
+		if (n > 0)
+			imported++;
+		/*
+		 * ★ 清理策略:只要【本地已经有完整副本】,就删掉模组上那份。
+		 *   - n > 0:刚导入成功,本地有 ✅
+		 *   - n == 0:之前就存过(内容 id 命中),本地也有 ✅
+		 *   - n < 0:导入失败 —— ★ 千万不能删,留着下轮重试
+		 *
+		 *   原来只删 stat==0(未读)的,而运营商下发的短信大多是
+		 *   stat=1(已读),于是一条都删不掉。真机上 SIM 卡 49/50
+		 *   一直是满的,再来的短信会被运营商直接拒收。
+		 *   本地存的是完整副本(含正文),删模组那份不丢东西。
+		 */
+		if (n >= 0 && n_del < (int)(sizeof(del_idx) / sizeof(del_idx[0])))
+			del_idx[n_del++] = i;
 	}
-	if (nidx > 0) {
-		char cmd[32];
 
-		snprintf(cmd, sizeof(cmd), "AT+CMGD=%d", indices[0]);
-		/* 逐条删;批量范围语法各家不一,逐条最保险 */
-		for (int i = 0; i < nidx; i++) {
-			snprintf(cmd, sizeof(cmd), "AT+CMGD=%d", indices[i]);
-			at_cmd(&port, cmd, c->timeout_ms, &r);
-		}
+	/* ★ 读完再统一删。边读边删会让后面的索引前移,漏读。 */
+	for (int i = 0; i < n_del; i++) {
+		char cmd[24];
+
+		snprintf(cmd, sizeof(cmd), "AT+CMGD=%d", del_idx[i]);
+		if (at_cmd(&port, cmd, c->timeout_ms, &r) != 0 || r.result != AT_RES_OK)
+			olog_warn("AT+CMGD=%d 失败(%s)", del_idx[i], at_result_str(r.result));
 	}
 
 	/* 顺便把短信中心号读出来(发的时候要用)*/
 	if (!c->sca[0]) {
 		if (at_cmd(&port, "AT+CSCA?", c->timeout_ms, &r) == 0) {
-			const char *l = at_find(&r, "+CSCA:");
+			const char *cl = at_find(&r, "+CSCA:");
 
-			if (l) {
+			if (cl) {
 				char fields[4][64];
 
-				if (at_csv(l, fields, 4) >= 1) {
-					/* 记到配置里,下次不用再问 */
+				if (at_csv(cl, fields, 4) >= 1)
 					ouci_set("openfi_sms", "sms", "sca", fields[0]);
-				}
 			}
 		}
 	}
