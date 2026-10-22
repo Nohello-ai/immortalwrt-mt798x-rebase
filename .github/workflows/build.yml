@@ -52,6 +52,10 @@ on:
       #   跟进上游 hnat mcast_table 空指针修复(issues/113)时推了补丁,
       #   等了半天没构建,查 paths 才发现漏了这一条。
       - 'target/linux/mediatek/patches-6.12/**'
+      # ★ 内核驱动基线源码(files-6.12/)—— 和 patches-6.12/ 是同一类坑。
+      #   mtk_hnat 等驱动直接改在这个目录里,不在 paths 里就等于"改了不编"。
+      #   踩过一次:提交 HNAT 的 18 处内存安全修复,推上去没有任何构建触发。
+      - 'target/linux/mediatek/files-6.12/**'
       # 板级 base-files(02_network 的 LAN/WAN 与 MAC 规则在这里,
       # 写错的表现是"刷完没有网络")
       - 'target/linux/mediatek/filogic/base-files/**'
