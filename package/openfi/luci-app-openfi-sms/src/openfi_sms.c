@@ -731,6 +731,22 @@ int sms_encode_pdu(const char *sca, const char *addr, const char *text, int dcs,
 
 		if (r < 0)
 			return -1;
+		/*
+		 * ★ 这里必须把长度字节改写成【字节数】。
+		 *
+		 *   sms_encode_addr 写进去的是【数字个数】(对 TP-DA 是对的),
+		 *   但 SMSC 这个字段标准要求的是【字节数】:
+		 *     PDU: <smsc_bytes> <类型> <BCD 数字...>
+		 *   +8613800791500(13 位)= 1 类型字节 + 7 数字字节 = 8 字节。
+		 *
+		 *   不改的话长度字节会是 0x0D,比正确值 0x08 大 5,
+		 *   模组直接回 +CMS ERROR: 304(无效的 PDU 参数)——
+		 *   真机上就是"发送短信一直失败",而且报错信息只有
+		 *   "发送失败(第 1/1 段)",完全看不出是这个原因。
+		 *
+		 *   r 含长度字节自己,所以字段字节数 = r - 1。
+		 */
+		b[n] = (unsigned char)(r - 1);
 		n += r;
 	} else {
 		b[n++] = 0x00;
